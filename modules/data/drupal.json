@@ -1,0 +1,26 @@
+{
+  "paths": [
+    {"path": "/user/login",                    "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin",                         "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/config",                  "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/reports/status",          "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/update.php",                    "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/install.php",                   "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/core/install.php",              "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/sites/default/",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites/default/settings.php",    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites/default/files/",          "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/CHANGELOG.txt",                 "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/core/CHANGELOG.txt",            "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/README.txt",                    "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/INSTALL.txt",                   "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/INSTALL.mysql.txt",             "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/INSTALL.pgsql.txt",             "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/LICENSE.txt",                   "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/MAINTAINERS.txt",               "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/web.config",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.htaccess",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/xmlrpc.php",                    "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/cron.php",                      "severity": "MEDIUM", "category": "debug_endpoint"}
+  ]
+}

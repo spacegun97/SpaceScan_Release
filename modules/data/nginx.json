@@ -1,0 +1,32 @@
+{
+  "paths": [
+    {"path": "/nginx_status",              "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/nginx-status",              "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/status",                    "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/basic_status",              "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/stub_status",               "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/.nginx.conf",               "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/nginx.conf",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/conf/nginx.conf",           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/etc/nginx/nginx.conf",      "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/phpinfo.php",               "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/info.php",                  "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/test.php",                  "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/php-fpm-status",            "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/php-fpm-ping",              "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/adminer/",                  "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/adminer.php",               "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/phpmyadmin/",               "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/phpMyAdmin/",               "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/50x.html",                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/index.html",                "severity": "LOW",    "category": "default_resource"},
+    {"path": "/.git/",                     "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/.git/config",               "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/.env",                      "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/crossdomain.xml",           "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/access.log",                "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/error.log",                 "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/logs/access.log",           "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/logs/error.log",            "severity": "LOW",    "category": "sensitive_file"}
+  ]
+}

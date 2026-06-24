@@ -1,0 +1,33 @@
+{
+  "paths": [
+    {"path": "/console/",                              "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/console/login/LoginForm.jsp",           "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/console/j_security_check",              "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/uddiexplorer/",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/uddiexplorer/SearchPublicRegistries.jsp","severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wls-wsat/",                             "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wls-wsat/CoordinatorPortType",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wls-wsat/RegistrationPortTypeRPC",      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wls-wsat/ParticipantPortType",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wls-wsat/RegistrationRequesterPortType","severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/_async/AsyncResponseService",           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/_async/AsyncResponseServiceJms",        "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/_async/AsyncResponseServiceHttps",      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/bea_wls_internal/",                     "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/bea_wls_deployment_internal/",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/bea_wls_cluster_internal/",             "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/bea_wls_anon_app_compiler/",            "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/ws_utc/",                               "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/ws_utc/begin.do",                       "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/em/",                                   "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/sbconsole/",                            "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wls/server/dev/",                       "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/management/tenant-monitoring/",         "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/management/weblogic/",                  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/weblogic/ready",                        "severity": "LOW",    "category": "status_page"},
+    {"path": "/index.jsp",                             "severity": "LOW",    "category": "default_resource"},
+    {"path": "/favicon.ico",                           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/console/framework/skins/",              "severity": "LOW",    "category": "default_resource"},
+    {"path": "/wl_ldi_mp/",                            "severity": "LOW",    "category": "default_resource"}
+  ]
+}

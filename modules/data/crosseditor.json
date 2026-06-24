@@ -1,0 +1,30 @@
+{
+  "paths": [
+    {"path": "/crosseditor/",                                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/CrossEditor/",                                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/ne/",                                           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/namo/",                                         "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/inc/",                              "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/crosseditor/css/",                              "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/js/",                               "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/dist/",                             "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/popup/",                            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/binary/",                           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/CrossEditor.js",             "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/binary/UploadHandler.aspx",         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/UploadHandler.jsp",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/UploadHandler.php",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/Upload.aspx",                "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/Upload.jsp",                 "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/Upload.php",                 "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/FileUpload.aspx",            "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/FileUpload.jsp",             "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/FileUpload.php",             "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/sample/",                           "severity": "LOW",    "category": "sample_app"},
+    {"path": "/crosseditor/sample/sample.html",                "severity": "LOW",    "category": "sample_app"},
+    {"path": "/crosseditor/sample/sample.jsp",                 "severity": "LOW",    "category": "sample_app"},
+    {"path": "/crosseditor/sample/sample.asp",                 "severity": "LOW",    "category": "sample_app"},
+    {"path": "/crosseditor/sample/sample.aspx",                "severity": "LOW",    "category": "sample_app"},
+    {"path": "/crosseditor/sample/sample.php",                 "severity": "LOW",    "category": "sample_app"}
+  ]
+}

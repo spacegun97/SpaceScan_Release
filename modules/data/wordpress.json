@@ -1,0 +1,28 @@
+{
+  "paths": [
+    {"path": "/wp-login.php",                  "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/",                     "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/admin.php",            "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/admin-ajax.php",       "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-json/",                      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-json/wp/v2/users",           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/xmlrpc.php",                    "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-cron.php",                   "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/wp-config.php",                 "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-config.php.bak",             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-config.php~",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-config.php.old",             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/debug.log",          "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/uploads/",           "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/wp-includes/",                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/readme.html",                   "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/readme.txt",                    "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/license.txt",                   "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/wp-trackback.php",              "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-links-opml.php",             "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-signup.php",                 "severity": "LOW",    "category": "default_resource"},
+    {"path": "/wp-activate.php",               "severity": "LOW",    "category": "default_resource"},
+    {"path": "/.htaccess",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/",                   "severity": "LOW",    "category": "default_resource"}
+  ]
+}

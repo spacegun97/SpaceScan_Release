@@ -1,0 +1,2545 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Space Scan Dashboard</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --bg:       #070b14;
+  --surf:     #0c1120;
+  --surf2:    #111827;
+  --surf3:    #1a2540;
+  --border:   #1e2d4a;
+  --border2:  #243351;
+  --text:     #cdd9f0;
+  --dim:      #4a607a;
+  --mid:      #7a9abd;
+  --accent:   #3b82f6;
+  --accent2:  #6366f1;
+  --glow:     rgba(59,130,246,.15);
+  --critical: #f43f5e;
+  --high:     #fb923c;
+  --medium:   #fbbf24;
+  --low:      #60a5fa;
+  --info:     #22d3ee;
+  --green:    #34d399;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans-serif; min-height:100vh; display:flex; flex-direction:column; }
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:var(--bg); }
+::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+
+/* Layout */
+.layout { display:flex; flex:1; }
+
+/* Sidebar */
+.sidebar { width:220px; min-height:100vh; background:var(--surf); border-right:1px solid var(--border); display:flex; flex-direction:column; flex-shrink:0; }
+.sidebar-logo { padding:24px 20px 20px; border-bottom:1px solid var(--border); }
+.logo-tag { font-family:'JetBrains Mono',monospace; font-size:9px; color:var(--accent); letter-spacing:3px; text-transform:uppercase; margin-bottom:6px; }
+.sidebar-logo h2 { font-size:16px; font-weight:700; color:#fff; }
+.sidebar-nav { padding:16px 12px; flex:1; }
+.nav-lbl { font-size:9px; color:var(--dim); letter-spacing:2px; text-transform:uppercase; padding:0 8px; margin:16px 0 8px; }
+.nav-item { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:8px; cursor:pointer; color:var(--mid); font-size:13px; font-weight:500; transition:all .15s; margin-bottom:2px; }
+.nav-item:hover { background:var(--surf3); color:var(--text); }
+.nav-item.active { background:var(--glow); color:var(--accent); }
+.sidebar-foot { padding:16px 20px; border-top:1px solid var(--border); font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--dim); }
+
+/* Content */
+.content { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.topbar { background:var(--surf); border-bottom:1px solid var(--border); padding:0 32px; height:56px; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
+.topbar-title { font-size:14px; font-weight:600; }
+.topbar-status { display:flex; align-items:center; gap:8px; font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--dim); }
+.dot { width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 6px var(--green); }
+.dot.scanning { background:var(--medium); box-shadow:0 0 6px var(--medium); animation:pulse 1s infinite; }
+
+.page { padding:32px; overflow-y:auto; flex:1; }
+.pg { display:none; }
+.pg.active { display:block; }
+
+/* Scan form */
+.card { background:var(--surf); border:1px solid var(--border); border-radius:14px; padding:28px 32px; margin-bottom:28px; position:relative; overflow:hidden; }
+.card::before { content:''; position:absolute; top:0; left:0; right:0; height:1px; background:linear-gradient(90deg,transparent,var(--accent),transparent); }
+.card-title { font-size:15px; font-weight:600; color:#fff; margin-bottom:20px; display:flex; align-items:center; gap:10px; }
+.card-title::before { content:''; width:3px; height:16px; background:var(--accent); border-radius:2px; }
+
+/* display:flex 클래스가 hidden 속성을 덮어쓰지 못하도록 강제 */
+[hidden] { display:none !important; }
+.form-row { display:flex; gap:12px; margin-bottom:16px; }
+.fg { display:flex; flex-direction:column; gap:6px; flex:1; }
+.fg label { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; font-weight:600; }
+.finput { background:var(--surf2); border:1px solid var(--border2); border-radius:8px; color:var(--text); font-family:'JetBrains Mono',monospace; font-size:13px; padding:10px 14px; outline:none; transition:border-color .2s; width:100%; }
+.finput:focus { border-color:var(--accent); box-shadow:0 0 0 3px rgba(59,130,246,.1); }
+.finput::placeholder { color:var(--dim); }
+
+.mod-grid { display:flex; flex-direction:column; gap:0; margin-top:4px; }
+/* 모듈 그룹 행 — 왼쪽 레이블 + 오른쪽 체크박스 나열 */
+.mod-cat-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 0; }
+/* 두 번째 그룹 위에 구분선 */
+.mod-cat-row + .mod-cat-row { border-top:1px solid var(--border); padding-top:12px; margin-top:4px; }
+/* 그룹 레이블 — 제일 왼쪽, 고정 너비로 정렬 */
+.mod-cat-lbl { font-size:11px; color:var(--dim); font-weight:500; min-width:68px; flex-shrink:0; }
+.mtoggle { display:flex; align-items:center; gap:10px; background:var(--surf2); border:1px solid var(--border); border-radius:8px; padding:10px 14px; cursor:pointer; transition:all .15s; user-select:none; }
+.mtoggle:hover { border-color:var(--border2); background:var(--surf3); }
+.mtoggle.on { border-color:var(--accent); background:rgba(59,130,246,.08); }
+.mtoggle input { display:none; }
+.chk { width:14px; height:14px; border:2px solid var(--border2); border-radius:3px; flex-shrink:0; transition:all .15s; position:relative; }
+.mtoggle.on .chk { background:var(--accent); border-color:var(--accent); }
+.mtoggle.on .chk::after { content:'✓'; position:absolute; top:-1px; left:1px; font-size:9px; color:#fff; font-weight:700; }
+.mlabel { font-size:12px; color:var(--mid); }
+.mtoggle.on .mlabel { color:var(--text); }
+
+.btn-scan { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border:none; border-radius:8px; padding:11px 28px; font-family:'Space Grotesk',sans-serif; font-size:13px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:8px; transition:all .2s; box-shadow:0 4px 14px rgba(59,130,246,.25); }
+.btn-scan:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(59,130,246,.35); }
+.btn-scan:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+.btn-cancel { background:transparent; color:var(--critical); border:1px solid rgba(244,63,94,.4); border-radius:7px; padding:6px 16px; font-family:'Space Grotesk',sans-serif; font-size:12px; font-weight:600; cursor:pointer; transition:all .15s; }
+.btn-cancel:hover { background:rgba(244,63,94,.1); border-color:var(--critical); }
+.btn-cancel:disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
+
+/* Progress */
+.progress-box { background:var(--surf); border:1px solid var(--border); border-radius:14px; padding:22px 32px; margin-bottom:28px; display:none; }
+.progress-box.show { display:block; }
+.prog-hd { display:flex; justify-content:space-between; margin-bottom:14px; }
+.prog-lbl { font-size:13px; font-weight:600; }
+.prog-pct { font-family:'JetBrains Mono',monospace; font-size:13px; color:var(--accent); }
+.prog-bg { background:var(--surf2); border-radius:99px; height:6px; overflow:hidden; margin-bottom:10px; }
+.prog-fill { height:100%; border-radius:99px; background:linear-gradient(90deg,var(--accent),var(--accent2)); transition:width .4s; box-shadow:0 0 8px rgba(59,130,246,.5); }
+.prog-mod { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--dim); }
+
+/* Results */
+.results-box { display:none; }
+.results-box.show { display:block; }
+.risk-ov { display:grid; grid-template-columns:auto 1fr; gap:24px; background:var(--surf); border:1px solid var(--border); border-radius:14px; padding:28px 32px; margin-bottom:22px; align-items:center; }
+.grade-wrap { display:flex; flex-direction:column; align-items:center; gap:6px; }
+.rgrade { width:80px; height:80px; border-radius:50%; border:3px solid var(--accent); display:flex; align-items:center; justify-content:center; font-size:32px; font-weight:700; color:var(--accent); box-shadow:0 0 24px rgba(59,130,246,.2); flex-direction:column; }
+.rgrade-lbl { font-size:9px; color:var(--dim); letter-spacing:2px; }
+.risk-stats { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; }
+.rstat { background:var(--surf2); border:1px solid var(--border); border-radius:10px; padding:14px; text-align:center; }
+.rstat-n { font-family:'JetBrains Mono',monospace; font-size:26px; font-weight:700; line-height:1; margin-bottom:5px; }
+.rstat-lbl { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; }
+
+/* Download buttons */
+.dl-row { display:flex; gap:10px; margin-bottom:16px; justify-content:flex-end; }
+.btn-dl { background:var(--surf3); color:var(--text); border:1px solid var(--border2); border-radius:7px; padding:8px 16px; font-size:12px; font-family:'Space Grotesk',sans-serif; cursor:pointer; display:inline-flex; align-items:center; gap:6px; text-decoration:none; transition:all .15s; }
+.btn-dl:hover { background:var(--surf2); border-color:var(--accent); color:var(--accent); }
+.btn-dl:disabled, .btn-dl.disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
+
+/* Findings */
+.findings-list { display:flex; flex-direction:column; gap:10px; }
+.fcard { background:var(--surf); border:1px solid var(--border); border-radius:10px; overflow:hidden; cursor:pointer; transition:border-color .15s; }
+.fcard:hover { border-color:var(--border2); }
+.fcard-hd { display:grid; grid-template-columns:100px 140px 1fr auto; gap:14px; padding:13px 18px; align-items:center; }
+.fbadge { display:inline-flex; align-items:center; justify-content:center; padding:3px 10px; border-radius:5px; font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:700; letter-spacing:.5px; }
+.s-HIGH     { background:rgba(251,146,60,.15); color:#fb923c; border:1px solid rgba(251,146,60,.3); }
+.s-MEDIUM   { background:rgba(251,191,36,.15); color:#fbbf24; border:1px solid rgba(251,191,36,.3); }
+.s-LOW      { background:rgba(96,165,250,.15);  color:#60a5fa; border:1px solid rgba(96,165,250,.3); }
+.s-INFO     { background:transparent;           color:#fff;    border:1px solid rgba(34,211,238,.3); }
+.fmod { font-size:11px; color:var(--dim); }
+.fname { font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--accent); }
+.ftoggle { font-size:12px; color:var(--dim); }
+.fbody { border-top:1px solid var(--border); padding:16px 18px; display:none; background:rgba(0,0,0,.2); }
+.fbody.open { display:block; }
+.fgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.dlbl { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }
+.dval { font-size:12px; }
+.dval code { font-family:'JetBrains Mono',monospace; font-size:11px; background:var(--surf2); padding:2px 6px; border-radius:4px; color:#fbbf24; word-break:break-all; }
+/* History */
+.htable { width:100%; border-collapse:collapse; font-size:13px; }
+.htable th { text-align:left; padding:10px 16px; font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--border); }
+.htable td { padding:12px 16px; border-bottom:1px solid var(--border); color:var(--mid); }
+.htable tr:last-child td { border-bottom:none; }
+.htable tr:hover td { background:rgba(255,255,255,.02); }
+
+.sec-hd { font-size:11px; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:2px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid var(--border); }
+.empty-st { text-align:center; padding:60px 20px; color:var(--dim); font-size:13px; }
+.empty-icon { font-size:40px; margin-bottom:12px; opacity:.4; }
+
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── SQLi 추출 모드 ─────────────────────────────────────────── */
+/* Fingerprint 결과 박스 */
+.ext-fp-box { background:var(--surf2); border:1px solid var(--border2); border-radius:10px; padding:14px 18px; }
+.ext-fp-row { display:flex; gap:12px; padding:6px 0; font-size:12px; align-items:center; }
+.ext-fp-lbl { color:var(--dim); min-width:160px; text-transform:uppercase; letter-spacing:1px; font-size:10px; font-weight:600; }
+.ext-fp-val { font-family:'JetBrains Mono',monospace; color:var(--accent); }
+
+/* Wizard 단계 표시 */
+.ext-wizard-steps { display:flex; gap:8px; margin-bottom:18px; }
+.ext-wizard-step { flex:1; padding:10px 12px; background:var(--surf2); border:1px solid var(--border); border-radius:7px; text-align:center; font-size:11px; color:var(--dim); transition:all .15s; }
+.ext-wizard-step.active { border-color:var(--accent); color:var(--accent); background:var(--glow); box-shadow:0 0 8px rgba(59,130,246,.15); }
+.ext-wizard-step.done { border-color:var(--green); color:var(--green); }
+
+.ext-step { display:none; }
+.ext-step.show { display:block; }
+
+/* DB / 테이블 / 컬럼 선택 리스트 */
+.ext-list { max-height:280px; overflow-y:auto; background:var(--surf2); border:1px solid var(--border2); border-radius:8px; padding:6px; }
+.ext-list-item { display:flex; align-items:center; gap:10px; padding:9px 14px; border-radius:5px; cursor:pointer; font-size:12px; font-family:'JetBrains Mono',monospace; color:var(--mid); transition:all .12s; user-select:none; }
+.ext-list-item:hover { background:var(--surf3); color:var(--text); }
+.ext-list-item.selected { background:var(--glow); color:var(--accent); border-left:2px solid var(--accent); padding-left:12px; }
+#ext-wizard.ext-busy .ext-list-item { pointer-events:none; opacity:.5; }
+.ext-list-empty { padding:24px; text-align:center; color:var(--dim); font-size:12px; }
+
+/* 모달 */
+.ext-modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.65); display:none; align-items:center; justify-content:center; z-index:100; }
+.ext-modal-bg.show { display:flex; }
+.ext-modal { background:var(--surf); border:1px solid var(--border2); border-radius:12px; padding:26px 30px; max-width:540px; width:90%; box-shadow:0 12px 36px rgba(0,0,0,.5); }
+.ext-modal h3 { margin-bottom:14px; font-size:15px; color:var(--accent); }
+.ext-modal p { font-size:13px; line-height:1.7; color:var(--mid); margin-bottom:6px; }
+.ext-modal .btn-row { display:flex; gap:10px; margin-top:20px; justify-content:flex-end; }
+
+/* 액션 버튼 그룹 */
+.ext-action-row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.btn-act { background:var(--surf2); color:var(--text); border:1px solid var(--border2); border-radius:7px; padding:9px 18px; font-size:12px; font-family:'Space Grotesk',sans-serif; font-weight:500; cursor:pointer; transition:all .15s; }
+.btn-act:hover { border-color:var(--accent); color:var(--accent); }
+.btn-act:disabled { opacity:.4; cursor:not-allowed; }
+.btn-act.primary { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border-color:transparent; box-shadow:0 3px 10px rgba(59,130,246,.2); }
+.btn-act.primary:hover { color:#fff; transform:translateY(-1px); }
+
+/* dump 결과 표 */
+.ext-result-wrap { max-height:420px; overflow:auto; background:var(--surf2); border:1px solid var(--border); border-radius:8px; margin-top:14px; }
+.ext-result-table { width:100%; border-collapse:collapse; font-family:'JetBrains Mono',monospace; font-size:11px; }
+.ext-result-table th { background:var(--surf3); color:var(--accent); padding:9px 12px; text-align:left; border-bottom:1px solid var(--border2); position:sticky; top:0; z-index:1; font-weight:600; }
+.ext-result-table td { padding:7px 12px; border-bottom:1px solid var(--border); color:var(--mid); word-break:break-all; max-width:280px; vertical-align:top; }
+.ext-result-table tr:hover td { background:rgba(255,255,255,.02); color:var(--text); }
+
+/* DBMS 정보 박스 */
+.ext-info-box { background:var(--surf2); border:1px solid var(--border); border-radius:8px; padding:14px 18px; margin-top:14px; }
+.ext-info-row { display:flex; gap:12px; padding:5px 0; font-size:12px; }
+.ext-info-lbl { color:var(--dim); min-width:120px; text-transform:uppercase; letter-spacing:1px; font-size:10px; font-weight:600; }
+.ext-info-val { font-family:'JetBrains Mono',monospace; color:var(--text); word-break:break-all; flex:1; }
+
+/* 안내 / 에러 */
+.ext-hint { font-size:11px; color:var(--dim); margin-top:4px; }
+.ext-error { color:var(--critical); font-size:13px; padding:14px 18px; background:rgba(244,63,94,.08); border:1px solid rgba(244,63,94,.2); border-radius:8px; word-break:break-all; }
+
+/* Default Pages 스택 선택 영역 */
+.dp-stack-body { display:flex; flex-direction:column; gap:8px; background:var(--surf2); border:1px solid var(--border); border-radius:8px; padding:12px 14px; }
+.dp-cat-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.dp-cat-lbl { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--dim); letter-spacing:1px; min-width:96px; flex-shrink:0; }
+
+/* ── 엑셀 취합 페이지 ── */
+.mrg-dropzone { border:2px dashed var(--border2); border-radius:10px; padding:36px 24px; text-align:center; cursor:pointer; transition:border-color .2s, background .2s; background:var(--surf2); }
+.mrg-dropzone:hover, .mrg-dropzone.over { border-color:var(--accent); background:rgba(59,130,246,.05); }
+.mrg-dropzone-icon { font-size:28px; margin-bottom:8px; }
+.mrg-dropzone-lbl { font-size:13px; color:var(--mid); }
+.mrg-dropzone-lbl span { color:var(--accent); cursor:pointer; text-decoration:underline; }
+.mrg-dropzone-sub { font-size:11px; color:var(--dim); margin-top:4px; }
+.mrg-file-list { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
+.mrg-file-item { display:flex; align-items:center; justify-content:space-between; background:var(--surf2); border:1px solid var(--border); border-radius:7px; padding:8px 14px; font-size:12px; }
+.mrg-file-name { font-family:'JetBrains Mono',monospace; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.mrg-file-size { color:var(--dim); font-size:11px; margin-left:12px; flex-shrink:0; }
+.mrg-file-del { background:none; border:none; color:var(--dim); cursor:pointer; font-size:14px; padding:0 0 0 10px; flex-shrink:0; line-height:1; }
+.mrg-file-del:hover { color:var(--critical); }
+.mrg-stat-row { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px; }
+.mrg-stat-box { background:var(--surf2); border:1px solid var(--border); border-radius:8px; padding:12px 18px; flex:1; min-width:120px; }
+.mrg-stat-num { font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:700; color:var(--accent); }
+.mrg-stat-lbl { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
+.mrg-col-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; max-height:160px; overflow-y:auto; }
+.mrg-col-chip { font-family:'JetBrains Mono',monospace; font-size:11px; background:var(--surf3); border:1px solid var(--border2); border-radius:5px; padding:3px 9px; color:var(--mid); }
+.mrg-col-chip.origin { border-color:var(--accent); color:var(--accent); }
+.mrg-per-file { width:100%; border-collapse:collapse; font-size:12px; margin-top:10px; }
+.mrg-per-file th { text-align:left; padding:7px 10px; font-size:10px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); border-bottom:1px solid var(--border2); }
+.mrg-per-file td { padding:7px 10px; border-bottom:1px solid var(--border); color:var(--mid); font-family:'JetBrains Mono',monospace; font-size:11px; word-break:break-all; }
+.mrg-per-file tr:last-child td { border-bottom:none; }
+.mrg-per-file .skipped { color:var(--critical); }
+.mrg-per-file .new-cols { color:var(--green); font-size:10px; }
+.mrg-warn { font-size:12px; color:var(--medium); background:rgba(251,191,36,.08); border:1px solid rgba(251,191,36,.2); border-radius:7px; padding:10px 14px; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-tag">Space Scan</div>
+      <h2>Dashboard</h2>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-lbl">메뉴</div>
+      <div class="nav-item active" onclick="showPage('scan')"><span>⚡</span> 스캔 실행</div>
+      <div class="nav-item" onclick="showPage('history')"><span>📋</span> 스캔 히스토리</div>
+      <div class="nav-item" onclick="showPage('extract')"><span>💉</span> 데이터 추출 (SQLi)</div>
+      <div class="nav-item" onclick="showPage('merge')"><span>📂</span> 엑셀 취합</div>
+    </nav>
+    <div class="sidebar-foot">v1.0 · Authorized use only</div>
+  </aside>
+
+  <div class="content">
+    <div class="topbar">
+      <div class="topbar-title" id="topbar-title">스캔 실행</div>
+      <div class="topbar-status">
+        <div class="dot" id="dot"></div>
+        <span id="status-txt">대기 중</span>
+      </div>
+    </div>
+
+    <div class="page">
+
+      <!-- ── SCAN PAGE ── -->
+      <div class="pg active" id="pg-scan">
+
+        <div class="card">
+          <div class="card-title">새 스캔 시작</div>
+
+          <div class="form-row">
+            <div class="fg" style="flex:3">
+              <label>Target URL</label>
+              <input id="inp-url" class="finput" type="text" placeholder="https://example.com" />
+            </div>
+            <div class="fg" style="flex:1">
+              <label>Timeout (초)</label>
+              <input id="inp-timeout" class="finput" type="number" value="10" min="3" max="60" />
+            </div>
+            <div class="fg" style="flex:1">
+              <label>스캔 속도</label>
+              <select id="inp-speed" class="finput">
+                <option value="1">1 — 최저속 (5.0s)</option>
+                <option value="2">2 — 저속 (4.0s)</option>
+                <option value="3">3 — 느림 (3.0s)</option>
+                <option value="4">4 — 보통 (2.0s)</option>
+                <option value="5" selected>5 — 빠름 (1.0s)</option>
+                <option value="6">6 — 최고속 (0.0s)</option>
+              </select>
+            </div>
+            <div class="fg" style="flex:1">
+              <label>최대 크롤링 페이지(최대 30000)</label>
+              <input id="inp-max-pages" class="finput" type="number" value="100" min="10" max="30000" />
+            </div>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>JS 렌더링 <span style="color:var(--dim);font-weight:400;font-size:11px">(SPA·REST API 크롤링 — Playwright Chromium 최초 1회 자동 설치 ~150MB)</span></label>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+              <label class="mtoggle" style="display:inline-flex;flex-shrink:0">
+                <input type="checkbox" id="inp-render">
+                <div class="chk"></div>
+                <span class="mlabel">사용 (기본 OFF)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>Cookie <span style="color:var(--dim);font-weight:400;font-size:11px">(선택, 예: SESSIONID=abc123; token=xyz)</span></label>
+            <input id="inp-cookies" class="finput" type="text" placeholder="SESSIONID=abc123; token=xyz" autocomplete="off" />
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>인증 헤더 <span style="color:var(--dim);font-weight:400;font-size:11px">(선택, 한 줄에 한 개) 예: Authorization: Bearer xxx</span></label>
+            <textarea id="inp-auth-headers" class="finput" rows="2" style="font-family:'JetBrains Mono',monospace;resize:vertical"></textarea>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>프록시 <span style="color:var(--dim);font-weight:400;font-size:11px">(BurpSuite 등 인터셉트 프록시)</span></label>
+            <div style="display:flex;gap:10px;align-items:center">
+              <label class="mtoggle" style="display:inline-flex;flex-shrink:0">
+                <input type="checkbox" id="inp-proxy-use" onchange="toggleProxy('inp')">
+                <div class="chk"></div>
+                <span class="mlabel">사용</span>
+              </label>
+              <input id="inp-proxy-host" class="finput" type="text" value="127.0.0.1" placeholder="127.0.0.1" disabled style="flex:2;opacity:.4" />
+              <input id="inp-proxy-port" class="finput" type="number" value="8080" min="1" max="65535" placeholder="8080" disabled style="flex:1;opacity:.4" />
+            </div>
+          </div>
+
+          <div class="fg" style="margin-bottom:12px">
+            <label>스캔 모듈</label>
+            <div class="mod-grid" id="mod-grid">
+              <!-- 서버 설정 그룹 -->
+              <div class="mod-cat-row">
+                <span class="mod-cat-lbl">서버 설정</span>
+                <label class="mtoggle on"><input type="checkbox" value="directory_listing" checked><div class="chk"></div><span class="mlabel">Directory Listing</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="default_pages" checked><div class="chk"></div><span class="mlabel">Default Pages</span></label>
+              </div>
+              <!-- 입력 값 검증 그룹 -->
+              <div class="mod-cat-row">
+                <span class="mod-cat-lbl">입력 값 검증</span>
+                <label class="mtoggle on"><input type="checkbox" value="sql_injection" checked><div class="chk"></div><span class="mlabel">SQL Injection</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="path_traversal" checked><div class="chk"></div><span class="mlabel">Path Traversal</span></label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Default Pages 추가 점검 스택 선택 -->
+          <div id="dp-stack-section" class="fg" style="margin-bottom:20px">
+            <label>
+              Default Pages — 추가 점검 스택
+              <span style="color:var(--dim);font-weight:400;font-size:11px">(선택사항 · 자동 탐지 결과와 합쳐서 점검 · 미선택 시 탐지된 스택만 점검)</span>
+            </label>
+            <div class="dp-stack-body">
+              <div class="dp-cat-row">
+                <span class="dp-cat-lbl">WEB</span>
+                <label class="mtoggle"><input type="checkbox" value="Apache"><div class="chk"></div><span class="mlabel">Apache</span></label>
+                <label class="mtoggle"><input type="checkbox" value="Nginx"><div class="chk"></div><span class="mlabel">Nginx</span></label>
+                <label class="mtoggle"><input type="checkbox" value="IIS"><div class="chk"></div><span class="mlabel">IIS</span></label>
+              </div>
+              <div class="dp-cat-row">
+                <span class="dp-cat-lbl">WAS</span>
+                <label class="mtoggle"><input type="checkbox" value="Tomcat"><div class="chk"></div><span class="mlabel">Tomcat</span></label>
+                <label class="mtoggle"><input type="checkbox" value="JBoss"><div class="chk"></div><span class="mlabel">JBoss</span></label>
+                <label class="mtoggle"><input type="checkbox" value="WebLogic"><div class="chk"></div><span class="mlabel">WebLogic</span></label>
+                <label class="mtoggle"><input type="checkbox" value="WebSphere"><div class="chk"></div><span class="mlabel">WebSphere</span></label>
+              </div>
+              <div class="dp-cat-row">
+                <span class="dp-cat-lbl">Application</span>
+                <label class="mtoggle"><input type="checkbox" value="WordPress"><div class="chk"></div><span class="mlabel">WordPress</span></label>
+                <label class="mtoggle"><input type="checkbox" value="Drupal"><div class="chk"></div><span class="mlabel">Drupal</span></label>
+                <label class="mtoggle"><input type="checkbox" value="CKEditor"><div class="chk"></div><span class="mlabel">CKEditor</span></label>
+                <label class="mtoggle"><input type="checkbox" value="FCKEditor"><div class="chk"></div><span class="mlabel">FCKEditor</span></label>
+                <label class="mtoggle"><input type="checkbox" value="SmartEditor"><div class="chk"></div><span class="mlabel">SmartEditor</span></label>
+                <label class="mtoggle"><input type="checkbox" value="CrossEditor"><div class="chk"></div><span class="mlabel">CrossEditor</span></label>
+              </div>
+            </div>
+          </div>
+
+          <button class="btn-scan" id="btn-scan" onclick="startScan()">⚡ 스캔 시작</button>
+        </div>
+
+        <!-- Progress -->
+        <div class="progress-box" id="prog-box">
+          <div class="prog-hd">
+            <div class="prog-lbl">스캔 진행 중...</div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div class="prog-pct" id="prog-pct">0%</div>
+              <button class="btn-cancel" id="btn-cancel" onclick="cancelScan()">■ 중단</button>
+            </div>
+          </div>
+          <div class="prog-bg"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
+          <div class="prog-mod" id="prog-mod">모듈 초기화 중...</div>
+        </div>
+
+        <!-- Results -->
+        <div class="results-box" id="results-box">
+          <div class="risk-ov">
+            <div class="grade-wrap">
+              <div class="rgrade" id="rgrade">0</div>
+              <div class="rgrade-lbl">TOTAL</div>
+            </div>
+            <div class="risk-stats">
+              <div class="rstat"><div class="rstat-n" id="cnt-h" style="color:var(--high)">0</div><div class="rstat-lbl">High</div></div>
+              <div class="rstat"><div class="rstat-n" id="cnt-m" style="color:var(--medium)">0</div><div class="rstat-lbl">Medium</div></div>
+              <div class="rstat"><div class="rstat-n" id="cnt-l" style="color:var(--low)">0</div><div class="rstat-lbl">Low</div></div>
+              <div class="rstat"><div class="rstat-n" id="cnt-i" style="color:var(--info)">0</div><div class="rstat-lbl">Info</div></div>
+            </div>
+          </div>
+
+          <!-- 다운로드 버튼: <a> 태그 방식 -->
+          <div class="dl-row">
+            <a class="btn-dl disabled" id="btn-dl-html" href="#" download>⬇ HTML 리포트</a>
+          </div>
+
+          <div class="findings-list" id="findings-list"></div>
+        </div>
+
+      </div><!-- /pg-scan -->
+
+      <!-- ── HISTORY PAGE ── -->
+      <div class="pg" id="pg-history">
+        <div class="sec-hd">스캔 히스토리</div>
+        <div style="background:var(--surf);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+          <table class="htable">
+            <thead><tr><th>대상</th><th>취약점</th><th>일시</th><th>액션</th></tr></thead>
+            <tbody id="hist-body"><tr><td colspan="4" style="text-align:center;padding:40px;color:var(--dim)">스캔 기록 없음</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── EXTRACT PAGE (SQLi 데이터 추출) ── -->
+      <div class="pg" id="pg-extract">
+
+        <!-- 입력 폼 -->
+        <div class="card">
+          <div class="card-title">SQLi 데이터 추출 — 입력</div>
+
+          <div class="form-row">
+            <div class="fg" style="flex:3">
+              <label>타겟 URL <span style="color:var(--dim);font-weight:400;font-size:11px">(?param=val&... 형태로 입력하면 포커스 이동 시 파라미터 자동 채움)</span></label>
+              <input id="ext-target" class="finput" type="text" placeholder="https://example.com/post.php?id=1&cat=2" />
+            </div>
+            <div class="fg" style="flex:1">
+              <label>HTTP 메서드</label>
+              <select id="ext-method" class="finput">
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+              </select>
+            </div>
+            <div class="fg" style="flex:1">
+              <label>Timeout (초)</label>
+              <input id="ext-timeout" class="finput" type="number" value="10" min="3" max="60" />
+            </div>
+          </div>
+
+          <!-- POST 선택 시에만 표시 -->
+          <div id="ext-body-config" class="fg" style="margin-bottom:16px" hidden>
+            <label>Body 형식</label>
+            <select id="ext-body-type" class="finput">
+              <option value="form">form (application/x-www-form-urlencoded)</option>
+              <option value="json">json (application/json)</option>
+              <option value="xml">xml (application/xml, vuln_param은 CDATA로 자동 wrapping)</option>
+            </select>
+          </div>
+
+          <!-- 파라미터 행 입력 — GET/POST 공통 항상 표시 -->
+          <div class="fg" style="margin-bottom:16px">
+            <label>파라미터 <span style="color:var(--dim);font-weight:400;font-size:11px">체크박스로 페이로드를 삽입할 파라미터를 선택하세요 (1개). 정상 HTTP(S) 요청 상의 파라미터 값을 기재해야 합니다.</span></label>
+            <div id="ext-param-rows" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+            <button type="button" class="btn-act" onclick="addParamRow()" style="width:fit-content;font-size:11px;padding:6px 14px">+ 파라미터 추가</button>
+          </div>
+
+          <div class="form-row">
+            <div class="fg">
+              <label>추출 기법</label>
+              <select id="ext-technique" class="finput" onchange="onDbmsPresetChange()">
+                <option value="error">Error-based (빠름)</option>
+                <option value="boolean">Boolean-blind (매우 느림)</option>
+                <option value="union">UNION-based (빠름, 컬럼 수 필요)</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>요청 간 딜레이</label>
+              <select id="ext-speed" class="finput">
+                <option value="1">5.0s (최저속)</option>
+                <option value="2">4.0s</option>
+                <option value="3">3.0s</option>
+                <option value="4" selected>2.0s</option>
+                <option value="5">1.0s</option>
+                <option value="6">0.0s (최고속)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- DBMS 사전 선택 (자동 탐지 실패 시 fallback) -->
+          <div class="form-row">
+            <div class="fg">
+              <label>DBMS <span style="color:var(--dim);font-weight:400;font-size:11px">(자동 탐지 실패 시 수동 지정)</span></label>
+              <select id="ext-dbms-preset" class="finput" onchange="onDbmsPresetChange()">
+                <option value="">자동 탐지</option>
+                <option value="MySQL">MySQL</option>
+                <option value="MariaDB">MariaDB</option>
+                <option value="MSSQL">MSSQL</option>
+                <option value="PostgreSQL">PostgreSQL</option>
+                <option value="Oracle">Oracle</option>
+                <option value="SQLite">SQLite</option>
+              </select>
+            </div>
+            <div class="fg" style="flex:2">
+              <div id="ext-dbms-preset-warn" style="color:var(--warn,#f6a623);font-size:12px;padding-top:24px" hidden>
+                ⚠ SQLite는 Error-based를 지원하지 않습니다. 기법을 boolean 또는 union으로 변경하세요.
+              </div>
+            </div>
+          </div>
+
+          <!-- UNION 선택 시에만 표시 -->
+          <div id="ext-union-config" class="form-row" hidden>
+            <div class="fg">
+              <label>UNION 컬럼 수</label>
+              <input id="ext-union-cols" class="finput" type="number" placeholder="3" min="1" />
+            </div>
+            <div class="fg" style="flex:2">
+              <label>UNION 컬럼 타입 <span style="color:var(--dim);font-weight:400;font-size:11px">(콤마 구분, 예: int,string,null / 모든 컬럼이 같은 타입이면 'int/string/null' 하나만 입력)</span></label>
+              <input id="ext-union-types" class="finput" type="text" placeholder="int,string,null" />
+            </div>
+            <div class="fg">
+              <label>페이로드 삽입 컬럼 번호 <span style="color:var(--dim);font-weight:400;font-size:11px">(비우면 자동 탐지)</span></label>
+              <input id="ext-union-visible" class="finput" type="number" placeholder="자동" min="1" />
+            </div>
+            <div class="fg">
+              <label>행 묶음 크기 <span style="color:var(--dim);font-weight:400;font-size:11px">(한 번에 추출할 행 수, 기본 10)</span></label>
+              <input id="ext-union-row-batch" class="finput" type="number" placeholder="10" min="1" value="10" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="fg">
+              <label>인젝션 컨텍스트</label>
+              <select id="ext-ctx-mode" class="finput">
+                <option value="auto">자동 탐지</option>
+                <option value="manual">수동 지정</option>
+              </select>
+            </div>
+            <div class="fg" style="flex:2">
+              <label>컨텍스트 값 <span style="color:var(--dim);font-weight:400;font-size:11px">(수동 지정 시 — 빈 값=numeric)</span></label>
+              <input id="ext-ctx-value" class="finput" type="text" placeholder="', &quot;, '), '))" disabled />
+            </div>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>쿠키 <span style="color:var(--dim);font-weight:400;font-size:11px">(선택)</span></label>
+            <input id="ext-cookies" class="finput" type="text" placeholder="SESSIONID=abc; token=xyz" autocomplete="off" />
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>인증 헤더 <span style="color:var(--dim);font-weight:400;font-size:11px">(선택, 한 줄에 한 개) 예: Authorization: Bearer xxx</span></label>
+            <textarea id="ext-auth-headers" class="finput" rows="2" style="font-family:'JetBrains Mono',monospace;resize:vertical"></textarea>
+          </div>
+
+          <div class="fg" style="margin-bottom:16px">
+            <label>프록시 <span style="color:var(--dim);font-weight:400;font-size:11px">(BurpSuite 등 인터셉트 프록시)</span></label>
+            <div style="display:flex;gap:10px;align-items:center">
+              <label class="mtoggle" style="display:inline-flex;flex-shrink:0">
+                <input type="checkbox" id="ext-proxy-use" onchange="toggleProxy('ext')">
+                <div class="chk"></div>
+                <span class="mlabel">사용</span>
+              </label>
+              <input id="ext-proxy-host" class="finput" type="text" value="127.0.0.1" placeholder="127.0.0.1" disabled style="flex:2;opacity:.4" />
+              <input id="ext-proxy-port" class="finput" type="number" value="8080" min="1" max="65535" placeholder="8080" disabled style="flex:1;opacity:.4" />
+            </div>
+          </div>
+
+          <div id="ext-union-hex-row" style="margin-bottom:20px" hidden>
+            <label class="mtoggle on" style="display:inline-flex">
+              <input id="ext-union-hex" type="checkbox" checked>
+              <div class="chk"></div>
+              <span class="mlabel">UNION HEX 모드 (multibyte 안전, 기본 ON)</span>
+            </label>
+          </div>
+
+          <div style="display:flex;gap:24px;margin-bottom:14px">
+            <label class="mtoggle" style="display:inline-flex">
+              <input id="ext-base64-encode" type="checkbox">
+              <div class="chk"></div>
+              <span class="mlabel">Base64 인코딩</span>
+            </label>
+            <label class="mtoggle" style="display:inline-flex">
+              <input id="ext-save-excel" type="checkbox">
+              <div class="chk"></div>
+              <span class="mlabel">데이터 엑셀 저장</span>
+            </label>
+          </div>
+
+          <!-- 엑셀 저장 이름 입력 (save_excel 체크 시 노출) -->
+          <div id="ext-excel-name-row" style="display:none;align-items:center;gap:12px;margin-bottom:14px">
+            <input id="ext-excel-name" type="text" class="finput"
+                   placeholder="저장 이름 (예: test)" style="width:200px;font-size:13px">
+            <span style="font-size:12px;color:var(--dim)">→ extract_<이름>_DBfingerprint.xlsx</span>
+          </div>
+
+          <button class="btn-scan" id="ext-start-btn" onclick="startExtract()">▶ Fingerprint 시작</button>
+        </div>
+
+        <!-- Fingerprint 진행 박스 -->
+        <div class="progress-box" id="ext-fp-progress">
+          <div class="prog-hd">
+            <div class="prog-lbl">Fingerprint 진행 중...</div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div class="prog-pct" id="ext-fp-pct">0%</div>
+              <button class="btn-cancel" onclick="extractStop()">■ 중단</button>
+            </div>
+          </div>
+          <div class="prog-bg"><div class="prog-fill" id="ext-fp-fill" style="width:0%"></div></div>
+          <div class="prog-mod" id="ext-fp-status">컨텍스트 / DBMS 식별 중...</div>
+        </div>
+
+        <!-- Fingerprint 결과 -->
+        <div class="card" id="ext-fp-result" hidden>
+          <div class="card-title">Fingerprint 결과</div>
+          <div class="ext-fp-box">
+            <div class="ext-fp-row"><div class="ext-fp-lbl">DBMS</div><div class="ext-fp-val" id="ext-fp-dbms">-</div></div>
+            <div class="ext-fp-row"><div class="ext-fp-lbl">기법</div><div class="ext-fp-val" id="ext-fp-technique">-</div></div>
+            <div class="ext-fp-row"><div class="ext-fp-lbl">컨텍스트</div><div class="ext-fp-val" id="ext-fp-context">-</div></div>
+            <div class="ext-fp-row"><div class="ext-fp-lbl">UNION visible 컬럼</div><div class="ext-fp-val" id="ext-fp-union-visible">-</div></div>
+          </div>
+          <!-- 엑셀 저장 정보 (save_excel=true인 경우만 노출) -->
+          <div id="ext-excel-info" hidden style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:6px">엑셀 저장 정보</div>
+            <div id="ext-excel-files" style="font-size:12px;color:var(--text);margin-bottom:10px"></div>
+            <div style="font-size:12px;color:var(--dim);margin-bottom:4px">갱신 내역</div>
+            <div id="ext-excel-updates" style="font-size:12px;max-height:120px;overflow-y:auto;line-height:1.7"></div>
+          </div>
+        </div>
+
+        <!-- 액션 패널 -->
+        <div class="card" id="ext-action-panel" hidden>
+          <div class="card-title">액션</div>
+          <div class="ext-action-row">
+            <button class="btn-act" id="ext-dbms-info-btn" onclick="extractAction({action:'dbms_info'})">DBMS 정보</button>
+            <button class="btn-act primary" id="ext-start-wizard-btn" onclick="extractStartWizard()">데이터 추출 시작</button>
+            <button class="btn-cancel" id="ext-stop-btn" onclick="extractStop()" disabled>■ 중단</button>
+            <button class="btn-cancel" id="ext-reset-btn" onclick="extractReset()">↺ 초기화</button>
+          </div>
+
+          <!-- 액션 진행률 -->
+          <div class="progress-box" id="ext-action-progress-box">
+            <div class="prog-hd">
+              <div class="prog-lbl" id="ext-action-label">액션 진행 중...</div>
+              <div class="prog-pct" id="ext-action-pct">0%</div>
+            </div>
+            <div class="prog-bg"><div class="prog-fill" id="ext-action-fill" style="width:0%"></div></div>
+            <div class="prog-mod" id="ext-action-detail">-</div>
+          </div>
+
+          <!-- DBMS 정보 결과 -->
+          <div id="ext-dbms-info-result" hidden>
+            <div class="ext-info-box">
+              <div class="ext-info-row"><div class="ext-info-lbl">Version</div><div class="ext-info-val" id="ext-info-version">-</div></div>
+              <div class="ext-info-row"><div class="ext-info-lbl">User</div><div class="ext-info-val" id="ext-info-user">-</div></div>
+              <div class="ext-info-row"><div class="ext-info-lbl">Current DB</div><div class="ext-info-val" id="ext-info-current-db">-</div></div>
+            </div>
+          </div>
+
+          <!-- Wizard -->
+          <div id="ext-wizard" hidden style="margin-top:16px">
+
+            <div class="ext-wizard-steps">
+              <div class="ext-wizard-step" id="ext-wstep-1">1/4 데이터베이스</div>
+              <div class="ext-wizard-step" id="ext-wstep-2">2/4 테이블</div>
+              <div class="ext-wizard-step" id="ext-wstep-3">3/4 컬럼</div>
+              <div class="ext-wizard-step" id="ext-wstep-4">4/4 행 추출</div>
+            </div>
+
+            <div id="ext-step-dbs" class="ext-step">
+              <div class="sec-hd">데이터베이스 선택</div>
+              <div class="ext-list" id="ext-db-list"></div>
+            </div>
+
+            <div id="ext-step-tables" class="ext-step">
+              <div class="sec-hd">테이블 선택 — DB: <span id="ext-cur-db" style="color:var(--accent)"></span></div>
+              <div class="ext-list" id="ext-tbl-list"></div>
+              <div class="ext-action-row" style="margin-top:12px">
+                <button class="btn-act" onclick="extractWizardBack('dbs')">← DB 선택으로</button>
+              </div>
+            </div>
+
+            <div id="ext-step-cols" class="ext-step">
+              <div class="sec-hd">컬럼 선택 — 테이블: <span id="ext-cur-tbl" style="color:var(--accent)"></span></div>
+              <div class="ext-list" id="ext-col-list"></div>
+              <div class="ext-action-row" style="margin-top:12px">
+                <button class="btn-act" id="ext-col-all-btn" onclick="extractColAll()">전체 선택/해제</button>
+                <button class="btn-act primary" onclick="extractColConfirm()">선택 완료 → 다음</button>
+                <button class="btn-act" onclick="extractWizardBack('tables')">← 테이블 선택으로</button>
+              </div>
+            </div>
+
+            <div id="ext-step-dump" class="ext-step">
+              <div class="sec-hd">행 추출 — 테이블: <span id="ext-cur-tbl-2" style="color:var(--accent)"></span></div>
+              <div class="ext-action-row" style="margin-top:8px">
+                <button class="btn-act primary" id="ext-dump-btn" onclick="extractDumpStart()">▶ 추출 실행</button>
+                <button class="btn-act" onclick="extractWizardBack('cols')">← 컬럼 선택으로</button>
+                <button class="btn-act" onclick="extractWizardBack('tables')">← 다른 테이블</button>
+                <button class="btn-act" onclick="extractWizardBack('dbs')">← 다른 DB</button>
+              </div>
+
+              <!-- Dump 결과 표 -->
+              <div class="ext-result-wrap" id="ext-dump-result-wrap" hidden>
+                <table class="ext-result-table" id="ext-dump-table">
+                  <thead id="ext-dump-thead"></thead>
+                  <tbody id="ext-dump-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+          </div><!-- /ext-wizard -->
+        </div><!-- /ext-action-panel -->
+
+        <!-- 에러 표시 -->
+        <div class="card" id="ext-error-card" hidden>
+          <div class="card-title" style="color:var(--critical)">오류</div>
+          <div class="ext-error" id="ext-error-msg"></div>
+        </div>
+
+      </div><!-- /pg-extract -->
+
+      <!-- ── MERGE PAGE ── -->
+      <div class="pg" id="pg-merge">
+
+        <!-- 파일 업로드 카드 -->
+        <div class="card">
+          <div class="card-title">엑셀 파일 취합</div>
+
+          <!-- 드래그&드롭 영역 -->
+          <div class="mrg-dropzone" id="mrg-dropzone"
+               ondragover="mrgDragOver(event)" ondragleave="mrgDragLeave(event)" ondrop="mrgDrop(event)"
+               onclick="document.getElementById('mrg-file-input').click()">
+            <div class="mrg-dropzone-icon">📂</div>
+            <div class="mrg-dropzone-lbl">파일을 여기에 끌어다 놓거나 <span>클릭하여 선택</span></div>
+            <div class="mrg-dropzone-sub">.xlsx / .xlsm / .xls / .csv — 여러 파일 동시 선택 가능</div>
+          </div>
+          <input type="file" id="mrg-file-input" multiple accept=".xlsx,.xlsm,.xls,.csv" style="display:none" onchange="mrgFilesAdded(this.files)">
+
+          <!-- 선택된 파일 목록 -->
+          <div class="mrg-file-list" id="mrg-file-list"></div>
+
+          <!-- 출력 파일명 + 취합 버튼 -->
+          <div class="form-row" style="margin-top:18px; align-items:flex-end">
+            <div class="fg">
+              <label>출력 파일명 <span style="color:var(--dim);font-weight:400;font-size:11px">저장될 파일명 앞부분 (merge_{이름}_날짜시간.xlsx)</span></label>
+              <input id="mrg-out-name" class="finput" type="text" placeholder="result" />
+            </div>
+            <button class="btn-scan" id="mrg-btn" onclick="mrgStart()" style="white-space:nowrap">
+              <span>⚡</span> 취합 시작
+            </button>
+            <button class="btn-cancel" id="mrg-reset-btn" onclick="mrgReset()" style="white-space:nowrap">
+              ↺ 초기화
+            </button>
+          </div>
+
+          <!-- 에러 메시지 -->
+          <div class="ext-error" id="mrg-error" hidden></div>
+        </div>
+
+        <!-- 결과 카드 -->
+        <div class="card" id="mrg-result-card" hidden>
+          <div class="card-title">취합 결과</div>
+
+          <!-- 통계 -->
+          <div class="mrg-stat-row">
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="mrg-stat-rows">0</div>
+              <div class="mrg-stat-lbl">총 행 수</div>
+            </div>
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="mrg-stat-cols">0</div>
+              <div class="mrg-stat-lbl">총 컬럼 수</div>
+            </div>
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="mrg-stat-files">0</div>
+              <div class="mrg-stat-lbl">처리된 파일</div>
+            </div>
+          </div>
+
+          <!-- 다운로드 버튼 -->
+          <button class="btn-scan" id="mrg-dl-btn" onclick="mrgDownload()" style="margin-bottom:18px">
+            <span>⬇</span> 결과 파일 다운로드
+          </button>
+
+          <!-- 스킵된 파일 경고 -->
+          <div class="mrg-warn" id="mrg-skip-warn" hidden></div>
+
+          <!-- 최종 컬럼 목록 -->
+          <div class="card-title" style="font-size:13px; margin-bottom:8px">최종 컬럼 목록</div>
+          <div class="mrg-col-list" id="mrg-col-list"></div>
+
+          <!-- 파일별 상세 -->
+          <div class="card-title" style="font-size:13px; margin-top:20px; margin-bottom:4px">파일별 처리 현황</div>
+          <table class="mrg-per-file" id="mrg-per-file-table">
+            <thead>
+              <tr>
+                <th>파일명</th>
+                <th>읽은 시트</th>
+                <th>추가된 행</th>
+                <th>신규 컬럼</th>
+                <th>상태</th>
+              </tr>
+            </thead>
+            <tbody id="mrg-per-file-body"></tbody>
+          </table>
+        </div>
+
+      </div><!-- /pg-merge -->
+
+    </div><!-- /page -->
+  </div><!-- /content -->
+</div><!-- /layout -->
+
+<!-- ── Dump 견적 확인 모달 (1단계 → 2단계) ── -->
+<div class="ext-modal-bg" id="ext-estimate-modal">
+  <div class="ext-modal">
+    <div class="card-title">데이터 추출 견적 확인</div>
+    <div class="ext-info-box" id="ext-estimate-info">
+      <div class="ext-info-row"><span class="ext-info-lbl">대상 테이블</span><span class="ext-info-val" id="ext-est-table">-</span></div>
+      <div class="ext-info-row"><span class="ext-info-lbl">선택 컬럼 수</span><span class="ext-info-val" id="ext-est-cols">-</span></div>
+      <div class="ext-info-row"><span class="ext-info-lbl">예상 행 수</span><span class="ext-info-val" id="ext-est-rows">-</span></div>
+      <div class="ext-info-row"><span class="ext-info-lbl">예상 요청 수</span><span class="ext-info-val" id="ext-est-reqs">-</span></div>
+      <div class="ext-info-row"><span class="ext-info-lbl">예상 소요 시간</span><span class="ext-info-val" id="ext-est-eta">-</span></div>
+    </div>
+    <div class="ext-hint" style="margin-top:10px">기법(Boolean-blind)·속도 단계에 따라 다소 차이가 발생할 수 있습니다.</div>
+    <div class="ext-action-row" style="margin-top:14px;justify-content:flex-end">
+      <button class="btn-act" onclick="extractEstimateCancel()">취소</button>
+      <button class="btn-act primary" id="ext-est-confirm-btn" onclick="extractEstimateConfirm()">확인 후 시작</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── 기법 변경 안내 모달 (실패 시) ── -->
+<div class="ext-modal-bg" id="ext-retech-modal">
+  <div class="ext-modal">
+    <div class="card-title">기법 자동 전환</div>
+    <div class="ext-error" id="ext-retech-msg" style="background:transparent;color:var(--text);padding:0;margin-bottom:10px"></div>
+    <div class="ext-info-box">
+      <div class="ext-info-row"><span class="ext-info-lbl">현재 기법</span><span class="ext-info-val" id="ext-retech-from">-</span></div>
+      <div class="ext-info-row"><span class="ext-info-lbl">전환 후보</span><span class="ext-info-val" id="ext-retech-to">-</span></div>
+    </div>
+    <div class="ext-hint" style="margin-top:10px">전환을 승인하면 후보 기법으로 다시 시도합니다.</div>
+    <div class="ext-action-row" style="margin-top:14px;justify-content:flex-end">
+      <button class="btn-act" onclick="extractRetechniqueCancel()">취소</button>
+      <button class="btn-act primary" onclick="extractRetechniqueConfirm()">전환 후 재시도</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── DBMS 수동 선택 모달 (자동 식별 실패 시) ── -->
+<div class="ext-modal-bg" id="ext-dbms-modal">
+  <div class="ext-modal">
+    <div class="card-title">DBMS 수동 선택</div>
+    <div class="ext-error" id="ext-dbms-modal-msg" style="background:transparent;color:var(--text);padding:0;margin-bottom:10px"></div>
+    <div class="fg" style="margin-bottom:10px">
+      <label>DBMS</label>
+      <select id="ext-dbms-modal-select" class="finput" onchange="onDbmsModalSelectChange()">
+        <option value="">선택...</option>
+        <option value="MySQL">MySQL</option>
+        <option value="MariaDB">MariaDB</option>
+        <option value="MSSQL">MSSQL</option>
+        <option value="PostgreSQL">PostgreSQL</option>
+        <option value="Oracle">Oracle</option>
+        <option value="SQLite">SQLite</option>
+      </select>
+    </div>
+    <div id="ext-dbms-modal-warn" style="color:var(--warn,#f6a623);font-size:12px;margin-bottom:10px" hidden>
+      ⚠ SQLite는 Error-based를 지원하지 않습니다. 기법을 변경해주세요.
+    </div>
+    <div class="ext-hint" style="margin-top:10px">선택 후 확인을 누르면 해당 DBMS로 fingerprint를 재시도합니다.</div>
+    <div class="ext-action-row" style="margin-top:14px;justify-content:flex-end">
+      <button class="btn-act" onclick="extractDbmsSelectCancel()">취소</button>
+      <button class="btn-act primary" id="ext-dbms-modal-confirm-btn" disabled onclick="extractDbmsSelectConfirm()">확인</button>
+    </div>
+  </div>
+</div>
+
+<!-- 기존 데이터 재사용 확인 모달 -->
+<div class="ext-modal-bg" id="ext-reuse-modal">
+  <div class="ext-modal">
+    <h3>기존 데이터가 있습니다</h3>
+    <p id="ext-reuse-modal-summary" style="color:var(--text);font-weight:500;margin-bottom:10px"></p>
+    <p>기존에 저장된 추출 데이터가 있습니다.<br>이 데이터를 불러올까요?</p>
+    <p style="color:var(--dim);font-size:12px;margin-top:6px">[예] 선택 시 저장된 데이터만 불러오며, 저장 당시 추출되지 않은 데이터는 자동으로 추가 추출되지 않습니다.<br>[아니요] 선택 시 기존 파일을 덮어쓰고 처음부터 새로 추출합니다.</p>
+    <div class="btn-row">
+      <button class="btn-act" onclick="_reuseModalAnswer(false)">아니요 (새로 추출)</button>
+      <button class="btn-act primary" onclick="_reuseModalAnswer(true)">예 (저장 데이터 불러오기)</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentJobId = null;
+let pollTimer    = null;
+
+// ── Module toggles ──
+document.querySelectorAll('.mtoggle').forEach(lbl => {
+  lbl.addEventListener('click', () => {
+    const cb = lbl.querySelector('input');
+    cb.checked = !cb.checked;
+    lbl.classList.toggle('on', cb.checked);
+    // Default Pages 모듈 토글 시 스택 선택 영역 활성/비활성 동기화
+    if (cb.value === 'default_pages' && lbl.closest('#mod-grid')) {
+      _syncDpStackSection();
+    }
+    // 엑셀 저장 토글 → 저장 이름 입력란 표시/숨김
+    if (cb.id === 'ext-save-excel') {
+      document.getElementById('ext-excel-name-row').style.display =
+        cb.checked ? 'flex' : 'none';
+    }
+  });
+});
+
+// Default Pages 모듈 ON/OFF에 맞춰 스택 선택 영역 활성화/비활성화
+function _syncDpStackSection() {
+  const enabled = document.querySelector('#mod-grid input[value="default_pages"]').checked;
+  const sec = document.getElementById('dp-stack-section');
+  sec.style.opacity = enabled ? '1' : '.35';
+  sec.style.pointerEvents = enabled ? '' : 'none';
+}
+
+// ── Page nav ──
+function showPage(name) {
+  document.querySelectorAll('.pg').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('pg-' + name).classList.add('active');
+  const idx = ['scan','history','extract','merge'].indexOf(name);
+  document.querySelectorAll('.nav-item')[idx]?.classList.add('active');
+  document.getElementById('topbar-title').textContent = {scan:'스캔 실행', history:'스캔 히스토리', extract:'데이터 추출 (SQLi)', merge:'엑셀 취합'}[name];
+  if (name === 'history') loadHistory();
+}
+
+// ── 프록시 체크박스 토글 — 호스트/포트 input 활성화 제어 ──
+function toggleProxy(prefix) {
+  const use  = document.getElementById(prefix + '-proxy-use').checked;
+  const host = document.getElementById(prefix + '-proxy-host');
+  const port = document.getElementById(prefix + '-proxy-port');
+  host.disabled = !use;
+  port.disabled = !use;
+  host.style.opacity = use ? '1' : '.4';
+  port.style.opacity = use ? '1' : '.4';
+}
+
+// ── Start scan ──
+async function startScan() {
+  const url = document.getElementById('inp-url').value.trim();
+  if (!url) { alert('대상 URL을 입력하세요.'); return; }
+
+  const modules = [...document.querySelectorAll('#mod-grid input:checked')].map(c => c.value);
+  if (!modules.length) { alert('최소 하나의 모듈을 선택하세요.'); return; }
+
+  const timeout   = parseInt(document.getElementById('inp-timeout').value) || 10;
+  const speed     = parseInt(document.getElementById('inp-speed').value) || 5;
+  const maxPages  = parseInt(document.getElementById('inp-max-pages').value) || 100;
+  const render    = document.getElementById('inp-render').checked;
+  const cookies    = document.getElementById('inp-cookies').value.trim();
+  const authHeaders = _parseAuthHeaders(document.getElementById('inp-auth-headers').value);
+  const proxyUse  = document.getElementById('inp-proxy-use').checked;
+  const proxyHost = proxyUse ? (document.getElementById('inp-proxy-host').value.trim() || '127.0.0.1') : null;
+  const proxyPort = proxyUse ? (parseInt(document.getElementById('inp-proxy-port').value) || 8080) : null;
+  // Default Pages 추가 점검 스택 — 체크된 항목만 수집 (모듈 OFF이면 빈 배열)
+  const dpEnabled = document.querySelector('#mod-grid input[value="default_pages"]').checked;
+  const dpStacks  = dpEnabled
+    ? [...document.querySelectorAll('#dp-stack-section input:checked')].map(cb => cb.value)
+    : [];
+
+  document.getElementById('btn-scan').disabled = true;
+  document.getElementById('prog-box').classList.add('show');
+  document.getElementById('results-box').classList.remove('show');
+  document.getElementById('dot').className = 'dot scanning';
+  document.getElementById('status-txt').textContent = '스캔 중...';
+  _disableDlButtons();
+
+  try {
+    const res  = await fetch('/api/scan', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({target: url, modules, timeout, speed, max_pages: maxPages,
+                            render, cookies, auth_headers: authHeaders,
+                            proxy_host: proxyHost, proxy_port: proxyPort,
+                            default_pages_stacks: dpStacks}),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); _resetUI(); return; }
+    currentJobId = data.job_id;
+    _poll(currentJobId);
+  } catch(e) {
+    alert('스캔 시작 실패: ' + e.message);
+    _resetUI();
+  }
+}
+
+function _poll(jobId) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const r   = await fetch('/api/scan/' + jobId + '/status');
+      const job = await r.json();
+      _updateProgress(job);
+      if (job.status === 'completed') {
+        clearInterval(pollTimer);
+        _showResults(job);
+        _resetUI(false);
+      } else if (job.status === 'cancelled') {
+        clearInterval(pollTimer);
+        _resetUI();
+      }
+    } catch(_) {}
+  }, 800);
+}
+
+function _updateProgress(job) {
+  const pct = job.progress || 0;
+  document.getElementById('prog-fill').style.width = pct + '%';
+  document.getElementById('prog-pct').textContent  = pct + '%';
+  if (job.current_module)
+    document.getElementById('prog-mod').textContent = '▶ ' + job.current_module;
+}
+
+function _showResults(job) {
+  const risk  = job.risk || {};
+  const sc    = risk.severity_counts || {};
+  const total = risk.total_findings || 0;
+
+  // 총 취약점 개수 표시 — 개수에 따라 색상 변경
+  const gc = total === 0 ? '#34d399' : total <= 5 ? '#fbbf24' : '#f43f5e';
+  const g  = document.getElementById('rgrade');
+  g.textContent   = total;
+  g.style.color   = gc;
+  g.style.borderColor = gc;
+  g.style.boxShadow   = `0 0 24px ${gc}33`;
+
+  document.getElementById('cnt-h').textContent = sc.HIGH     || 0;
+  document.getElementById('cnt-m').textContent = sc.MEDIUM   || 0;
+  document.getElementById('cnt-l').textContent = sc.LOW      || 0;
+  document.getElementById('cnt-i').textContent = sc.INFO     || 0;
+
+  // ── 다운로드 버튼 활성화 (API 경로로 href 설정) ──
+  if (job.has_html_report) {
+    const btnH = document.getElementById('btn-dl-html');
+    btnH.href = `/api/scan/${currentJobId}/report/html`;
+    btnH.classList.remove('disabled');
+  }
+
+  // ── Findings ──
+  const list = document.getElementById('findings-list');
+  list.innerHTML = '';
+
+  const order = ['HIGH','MEDIUM','LOW','INFO'];
+  let all = [];
+  (job.results || []).forEach(r => {
+    (r.findings || []).forEach(f => all.push({...f, _mod: r.module}));
+  });
+  all.sort((a,b) => order.indexOf(a.severity) - order.indexOf(b.severity));
+
+  if (!all.length) {
+    // 정적 콘텐츠 — innerHTML 사용 안전
+    list.innerHTML = '<div class="empty-st"><div class="empty-icon">✅</div>발견된 취약점 없음</div>';
+  } else {
+    all.forEach((f, i) => {
+      const name = f.header || f.method || f.path || f.param || f.url || '-';
+      list.appendChild(_buildFindingCard(f, i, name));
+    });
+  }
+
+  document.getElementById('results-box').classList.add('show');
+  document.getElementById('prog-box').classList.remove('show');
+  document.getElementById('dot').className  = 'dot';
+  document.getElementById('status-txt').textContent = '스캔 완료';
+}
+
+// ── Finding 카드 DOM 생성 (XSS 방지 위해 textContent 사용) ──
+// 대상 서버 응답 값이 evidence/description/URL에 포함될 수 있어 innerHTML 대신 textContent로 삽입
+function _buildFindingCard(f, i, name) {
+  const card = document.createElement('div');
+  card.className = 'fcard';
+
+  // Header (클릭 시 body 토글)
+  const hd = document.createElement('div');
+  hd.className = 'fcard-hd';
+  hd.addEventListener('click', () => toggleF(i));
+
+  const badge = document.createElement('span');
+  badge.className = 'fbadge s-' + f.severity;
+  badge.textContent = f.severity;
+  hd.appendChild(badge);
+
+  const modEl = document.createElement('span');
+  modEl.className = 'fmod';
+  modEl.textContent = f._mod || '-';
+  hd.appendChild(modEl);
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'fname';
+  nameEl.textContent = name;
+  hd.appendChild(nameEl);
+
+  const toggleEl = document.createElement('span');
+  toggleEl.className = 'ftoggle';
+  toggleEl.id = 'ft-' + i;
+  toggleEl.textContent = '▼';
+  hd.appendChild(toggleEl);
+
+  card.appendChild(hd);
+
+  // Body (상세 정보)
+  const body = document.createElement('div');
+  body.className = 'fbody';
+  body.id = 'fb-' + i;
+
+  const grid = document.createElement('div');
+  grid.className = 'fgrid';
+
+  // 설명
+  grid.appendChild(_buildDetail('설명', f.description || '-'));
+
+  // URL — sql_injection처럼 response_url 필드가 있는 finding은 요청 URL을 본문에 항상 노출
+  // (카드 header는 method만 표시되므로 POST 케이스에서 URL 정보 누락 방지)
+  if (f.response_url !== undefined && f.url) {
+    grid.appendChild(_buildDetail('URL', String(f.url).substring(0, 300), true));
+  }
+
+  // 응답 URL — url과 다를 때만 표시 (리다이렉트 또는 GET payload 포함된 최종 URL)
+  if (f.response_url && f.response_url !== f.url) {
+    grid.appendChild(_buildDetail('응답 URL', String(f.response_url).substring(0, 300), true));
+  }
+
+  // 증거
+  grid.appendChild(_buildDetail('증거', String(f.evidence || '-').substring(0, 200), true));
+
+  // 기법 — sql_injection (error_based / boolean_based / inline_query)
+  if (f.type) {
+    grid.appendChild(_buildDetail('기법', f.type));
+  }
+  // 페이로드 — sql_injection
+  if (f.payload) {
+    grid.appendChild(_buildDetail('페이로드', String(f.payload).substring(0, 300), true));
+  }
+  // 스택 — default_pages
+  if (f.tech_stack) {
+    grid.appendChild(_buildDetail('스택', f.tech_stack));
+  }
+  // 상태 코드 — directory_listing / default_pages
+  if (f.status_code != null) {
+    grid.appendChild(_buildDetail('상태 코드', String(f.status_code)));
+  }
+
+  body.appendChild(grid);
+  card.appendChild(body);
+
+  return card;
+}
+
+// ── detail row 생성 (label + value) ──
+// isCode=true면 value를 <code> 태그로 감싸서 표시
+function _buildDetail(label, value, isCode) {
+  const wrap = document.createElement('div');
+
+  const lbl = document.createElement('div');
+  lbl.className = 'dlbl';
+  lbl.textContent = label;
+  wrap.appendChild(lbl);
+
+  const val = document.createElement('div');
+  val.className = 'dval';
+  if (isCode) {
+    const code = document.createElement('code');
+    code.textContent = value;
+    val.appendChild(code);
+  } else {
+    val.textContent = value;
+  }
+  wrap.appendChild(val);
+
+  return wrap;
+}
+
+function toggleF(i) {
+  document.getElementById('fb-' + i).classList.toggle('open');
+  const t = document.getElementById('ft-' + i);
+  t.textContent = t.textContent === '▼' ? '▲' : '▼';
+}
+
+// ── Cancel scan ──
+async function cancelScan() {
+  if (!currentJobId) return;
+  const btn = document.getElementById('btn-cancel');
+  btn.disabled = true;
+  btn.textContent = '중단 중...';
+  try {
+    await fetch('/api/scan/' + currentJobId + '/cancel', { method: 'POST' });
+  } catch(_) {}
+}
+
+function _disableDlButtons() {
+  const b = document.getElementById('btn-dl-html');
+  b.href = '#';
+  b.classList.add('disabled');
+}
+
+function _resetUI(resetStatus = true) {
+  document.getElementById('btn-scan').disabled = false;
+  // 중단 버튼 초기화
+  const btnCancel = document.getElementById('btn-cancel');
+  btnCancel.disabled = false;
+  btnCancel.textContent = '■ 중단';
+  if (resetStatus) {
+    document.getElementById('dot').className = 'dot';
+    document.getElementById('status-txt').textContent = '대기 중';
+    document.getElementById('prog-box').classList.remove('show');
+  }
+}
+
+// ── History ──
+async function loadHistory() {
+  try {
+    const scans = await (await fetch('/api/scans')).json();
+    const tbody = document.getElementById('hist-body');
+    tbody.innerHTML = '';
+    if (!scans.length) {
+      // 정적 콘텐츠 — innerHTML 사용 안전
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--dim)">스캔 기록 없음</td></tr>';
+      return;
+    }
+    for (const s of scans) {
+      tbody.appendChild(_buildHistoryRow(s));
+    }
+  } catch(e) { console.error(e); }
+}
+
+// ── History 행 DOM 생성 (XSS 방지 위해 textContent 사용) ──
+// s.target은 사용자 입력 기반이므로 innerHTML 대신 textContent로 삽입
+function _buildHistoryRow(s) {
+  const risk  = s.risk || {};
+  const total = risk.total_findings || 0;
+  const date  = s.created_at ? new Date(s.created_at).toLocaleString('ko-KR') : '-';
+
+  const tr = document.createElement('tr');
+
+  const tdTarget = document.createElement('td');
+  tdTarget.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent)";
+  tdTarget.textContent = s.target || '-';
+  tr.appendChild(tdTarget);
+
+  const tdTotal = document.createElement('td');
+  tdTotal.style.cssText = "font-family:'JetBrains Mono',monospace;font-size:12px";
+  tdTotal.textContent = total + '건';
+  tr.appendChild(tdTotal);
+
+  const tdDate = document.createElement('td');
+  tdDate.style.cssText = 'font-size:12px;color:var(--dim)';
+  tdDate.textContent = date;
+  tr.appendChild(tdDate);
+
+  const tdBtn = document.createElement('td');
+  if (s.has_html_report) {
+    const a = document.createElement('a');
+    a.className = 'btn-dl';
+    // job_id는 서버 생성 포맷이나, 안전을 위해 URL 인코딩
+    a.href = `/api/scan/${encodeURIComponent(s.job_id)}/report/html`;
+    a.setAttribute('download', '');
+    a.style.fontSize = '11px';
+    a.textContent = '⬇ HTML';
+    tdBtn.appendChild(a);
+  } else {
+    const span = document.createElement('span');
+    span.style.cssText = 'color:var(--dim);font-size:11px';
+    span.textContent = '리포트 없음';
+    tdBtn.appendChild(span);
+  }
+  tr.appendChild(tdBtn);
+
+  return tr;
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SQLi 데이터 추출 (Extract) — 상태/폴링/위저드/액션
+// ─────────────────────────────────────────────────────────────
+
+let extractJobId      = null;
+let extractPollTimer  = null;
+let extractCurrentDb  = null;   // wizard 상태 — 현재 선택한 DB
+let extractCurrentTbl = null;   // wizard 상태 — 현재 선택한 테이블
+let extractColSel     = new Set(); // wizard 상태 — 현재 선택된 컬럼 집합
+let extractEstCache   = null;   // 견적 모달용 임시 캐시 ({db, tbl, cols, limit, offset})
+let extractRetechCache= null;   // 재선택 모달용 임시 캐시 ({fallback})
+let extractDbmsCache  = null;   // DBMS 수동 선택 모달용 임시 캐시 ({technique})
+let _reuseModalResolve= null;   // 재사용 확인 모달 Promise resolver
+
+// ── 입력 폼 토글 (method/technique/ctx_mode 변경 시 관련 영역 표시) ──
+function _bindExtractFormToggles() {
+  const m = document.getElementById('ext-method');
+  m.addEventListener('change', () => {
+    // Body 형식 선택은 POST일 때만 의미 있음 — 파라미터 행은 GET/POST 공통
+    document.getElementById('ext-body-config').hidden = (m.value !== 'POST');
+  });
+  const t = document.getElementById('ext-technique');
+  t.addEventListener('change', () => {
+    const isUnion = (t.value === 'union');
+    document.getElementById('ext-union-config').hidden = !isUnion;
+    document.getElementById('ext-union-hex-row').hidden = !isUnion;
+  });
+  const c = document.getElementById('ext-ctx-mode');
+  c.addEventListener('change', () => {
+    document.getElementById('ext-ctx-value').disabled = (c.value !== 'manual');
+  });
+  // 타겟 URL blur 시 쿼리스트링을 파라미터 행으로 자동 파싱
+  document.getElementById('ext-target').addEventListener('blur', _parseUrlToParams);
+}
+_bindExtractFormToggles();
+// 페이지 로드 시 파라미터 행 1개 기본 표시
+addParamRow();
+
+// ── UI 초기화 (재시작 시 호출) ──
+function _resetExtractUI() {
+  document.getElementById('ext-fp-progress').classList.remove('show');
+  document.getElementById('ext-fp-result').hidden = true;
+  document.getElementById('ext-action-panel').hidden = true;
+  document.getElementById('ext-action-progress-box').classList.remove('show');
+  document.getElementById('ext-dbms-info-result').hidden = true;
+  document.getElementById('ext-wizard').hidden = true;
+  document.getElementById('ext-error-card').hidden = true;
+  document.getElementById('ext-estimate-modal').classList.remove('show');
+  document.getElementById('ext-retech-modal').classList.remove('show');
+  document.getElementById('ext-dbms-modal').classList.remove('show');
+  document.getElementById('ext-reuse-modal').classList.remove('show');
+  document.getElementById('ext-dump-result-wrap').hidden = true;
+  document.getElementById('ext-fp-fill').style.width = '0%';
+  document.getElementById('ext-fp-pct').textContent = '0%';
+  document.getElementById('ext-fp-status').textContent = '컨텍스트 / DBMS 식별 중...';
+  document.getElementById('ext-action-fill').style.width = '0%';
+  document.getElementById('ext-action-pct').textContent = '0%';
+  document.getElementById('ext-start-btn').disabled = false;
+  // [중단] 버튼 — 다음 세션을 위해 disabled로 복귀
+  const stopBtn = document.getElementById('ext-stop-btn');
+  if (stopBtn) stopBtn.disabled = true;
+  // wizard 상태 초기화
+  extractCurrentDb = null;
+  extractCurrentTbl = null;
+  extractColSel = new Set();
+  extractEstCache = null;
+  extractRetechCache = null;
+  extractDbmsCache   = null;
+  extractJobId = null;
+}
+
+// ── 파라미터 행 관리 ──
+
+// 파라미터 행 1개 생성하여 ext-param-rows에 추가
+function addParamRow(name, value, checked) {
+  const wrap = document.getElementById('ext-param-rows');
+  const row = document.createElement('div');
+  row.className = 'ext-param-row';
+  row.style.cssText = 'display:flex;gap:8px;align-items:center';
+  row.innerHTML = `
+    <label style="display:flex;align-items:center;gap:5px;flex-shrink:0;cursor:pointer;user-select:none">
+      <input type="checkbox" class="ext-param-chk" onchange="_onParamCheckChange(this)"
+             style="width:14px;height:14px;cursor:pointer;accent-color:var(--accent)"
+             ${checked ? 'checked' : ''}>
+      <span style="font-size:10px;color:var(--dim);white-space:nowrap;letter-spacing:.5px">페이로드</span>
+    </label>
+    <input type="text" class="finput ext-param-name" placeholder="파라미터명"
+           style="flex:1;min-width:80px;padding:7px 10px" value="${_esc(name || '')}" />
+    <input type="text" class="finput ext-param-value" placeholder="값"
+           style="flex:2;padding:7px 10px" value="${_esc(value || '')}" />
+    <button type="button" onclick="removeParamRow(this)"
+            style="flex-shrink:0;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--dim);width:28px;height:28px;cursor:pointer;font-size:14px;line-height:1;transition:color .15s,border-color .15s"
+            onmouseover="this.style.color='var(--critical)';this.style.borderColor='var(--critical)'"
+            onmouseout="this.style.color='var(--dim)';this.style.borderColor='var(--border2)'">×</button>
+  `;
+  wrap.appendChild(row);
+}
+
+// 행 삭제 — 행이 1개만 남은 경우 삭제 막지 않음 (검증은 startExtract에서)
+function removeParamRow(btn) {
+  btn.closest('.ext-param-row').remove();
+}
+
+// 체크박스 단일 선택 강제 — 하나 체크 시 나머지 자동 해제
+function _onParamCheckChange(chk) {
+  if (!chk.checked) return;
+  document.querySelectorAll('#ext-param-rows .ext-param-chk').forEach(c => {
+    if (c !== chk) c.checked = false;
+  });
+}
+
+// 파라미터 행에서 { bodyParams, param } 수집 + 검증
+// 오류 시 alert 표시 후 null 반환
+function _collectParamRows() {
+  const rows = document.querySelectorAll('#ext-param-rows .ext-param-row');
+  if (rows.length === 0) {
+    alert('파라미터를 최소 1개 추가하세요.');
+    return null;
+  }
+  const bodyParams = {};
+  let param = null;
+  const names = [];
+  for (const row of rows) {
+    const nameEl  = row.querySelector('.ext-param-name');
+    const valueEl = row.querySelector('.ext-param-value');
+    const chkEl   = row.querySelector('.ext-param-chk');
+    const k = (nameEl.value || '').trim();
+    const v = (valueEl.value || '');
+    if (!k) {
+      alert('파라미터명이 비어 있는 행이 있습니다.');
+      nameEl.focus();
+      return null;
+    }
+    if (names.includes(k)) {
+      alert(`파라미터명 '${k}'이(가) 중복됩니다.`);
+      nameEl.focus();
+      return null;
+    }
+    names.push(k);
+    bodyParams[k] = v;
+    if (chkEl.checked) {
+      param = k;
+    }
+  }
+  if (!param) {
+    alert('페이로드를 삽입할 파라미터의 체크박스를 선택하세요.');
+    return null;
+  }
+  return { bodyParams, param };
+}
+
+// HTML 특수문자 이스케이프 (input value 삽입 시 XSS 방지)
+function _esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ext-target blur 시 호출 — URL 쿼리스트링을 파라미터 행으로 자동 파싱
+function _parseUrlToParams() {
+  const el  = document.getElementById('ext-target');
+  const raw = el.value.trim();
+  if (!raw) return;
+
+  // ? 없으면 동작 안 함
+  const qIdx = raw.indexOf('?');
+  if (qIdx === -1) return;
+
+  const base = raw.slice(0, qIdx);
+  // # fragment 제거 후 쿼리 부분만 추출
+  let qs = raw.slice(qIdx + 1);
+  const hIdx = qs.indexOf('#');
+  if (hIdx !== -1) qs = qs.slice(0, hIdx);
+  if (!qs) return;
+
+  // key=value 파싱 (중복 키는 마지막 값으로 병합, 값 없는 키는 빈 문자열)
+  const pairs = [];
+  const seen  = {};
+  for (const part of qs.split('&')) {
+    if (!part) continue;
+    const eqIdx = part.indexOf('=');
+    let k = eqIdx === -1 ? part : part.slice(0, eqIdx);
+    let v = eqIdx === -1 ? '' : part.slice(eqIdx + 1);
+    try { k = decodeURIComponent(k.replace(/\+/g, ' ')); } catch (e) {}
+    try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) {}
+    if (!k) continue;
+    if (seen[k] !== undefined) {
+      pairs[seen[k]][1] = v;  // 중복 키 마지막 값으로 교체
+    } else {
+      seen[k] = pairs.length;
+      pairs.push([k, v]);
+    }
+  }
+  if (pairs.length === 0) return;
+
+  // 기존 행에 사용자가 입력한 값이 있으면 confirm으로 교체 여부 확인
+  const rows = document.querySelectorAll('#ext-param-rows .ext-param-row');
+  const hasInput = [...rows].some(r =>
+    r.querySelector('.ext-param-name').value.trim() !== '' ||
+    r.querySelector('.ext-param-value').value !== ''
+  );
+  if (hasInput && !confirm(`파라미터 행(${rows.length}개)을 URL에서 파싱한 ${pairs.length}개로 교체할까요?`)) return;
+
+  // 기존 행 제거 → URL 파라미터로 새 행 생성 (첫 번째 파라미터 자동 체크)
+  document.getElementById('ext-param-rows').innerHTML = '';
+  pairs.forEach(([k, v], i) => addParamRow(k, v, i === 0));
+
+  // URL에서 쿼리스트링 제거 (재-blur 시 중복 생성 방지)
+  el.value = base;
+}
+
+// ── 인증 헤더 (한 줄에 한 개: "Header: value") ──
+function _parseAuthHeaders(text) {
+  text = (text || '').trim();
+  if (!text) return {};
+  const out = {};
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const colon = trimmed.indexOf(':');
+    if (colon < 0) continue;
+    const k = trimmed.slice(0, colon).trim();
+    const v = trimmed.slice(colon + 1).trim();
+    if (k) out[k] = v;
+  }
+  return out;
+}
+
+// ── 재사용 모달 ──
+function _reuseModalAnswer(useExisting) {
+  document.getElementById('ext-reuse-modal').classList.remove('show');
+  if (_reuseModalResolve) {
+    _reuseModalResolve(useExisting);
+    _reuseModalResolve = null;
+  }
+}
+
+async function _checkAndAskReuse(name) {
+  // 기존 파일 확인 후 없으면 false, 있으면 모달 띄워 사용자 결정 반환
+  try {
+    const r = await fetch(`/api/extract/check-existing?name=${encodeURIComponent(name)}`);
+    if (!r.ok) return false;
+    const j = await r.json();
+    if (!j.exists) return false;
+
+    const s = j.summary || {};
+    const parts = [];
+    if (s.dbms)                             parts.push(`DBMS: ${s.dbms}`);
+    if (s.technique)                        parts.push(`기법: ${s.technique}`);
+    if (typeof s.db_count === 'number')     parts.push(`DB: ${s.db_count}개`);
+    document.getElementById('ext-reuse-modal-summary').textContent =
+      parts.join(' · ') || '이전 추출 데이터';
+    document.getElementById('ext-reuse-modal').classList.add('show');
+
+    return new Promise(resolve => { _reuseModalResolve = resolve; });
+  } catch (e) {
+    return false;
+  }
+}
+
+// ── Fingerprint 시작 (메인 진입점) ──
+async function startExtract() {
+  const target = document.getElementById('ext-target').value.trim();
+  if (!target) { alert('타겟 URL을 입력하세요.'); return; }
+
+  // 파라미터 행에서 bodyParams + vuln param 수집
+  const collected = _collectParamRows();
+  if (!collected) return;
+  const { bodyParams, param } = collected;
+
+  const method     = document.getElementById('ext-method').value;
+  const bodyType   = document.getElementById('ext-body-type').value;
+  const technique  = document.getElementById('ext-technique').value;
+  const speed      = parseInt(document.getElementById('ext-speed').value) || 4;
+  const timeout    = parseInt(document.getElementById('ext-timeout').value) || 10;
+  const ctxMode    = document.getElementById('ext-ctx-mode').value;
+  const ctxValue   = document.getElementById('ext-ctx-value').value;
+  const cookies    = document.getElementById('ext-cookies').value.trim();
+  const authText   = document.getElementById('ext-auth-headers').value;
+  const unionHex   = document.getElementById('ext-union-hex').checked;
+  const proxyUse   = document.getElementById('ext-proxy-use').checked;
+  const proxyHost  = proxyUse ? (document.getElementById('ext-proxy-host').value.trim() || '127.0.0.1') : null;
+  const proxyPort  = proxyUse ? (parseInt(document.getElementById('ext-proxy-port').value) || 8080) : null;
+  const unionCols    = parseInt(document.getElementById('ext-union-cols').value) || 0;
+  const unionTypes   = document.getElementById('ext-union-types').value
+                       .split(',').map(s => s.trim()).filter(Boolean);
+  const unionVisible   = document.getElementById('ext-union-visible').value.trim() || null;
+  const unionRowBatch  = parseInt(document.getElementById('ext-union-row-batch').value) || 10;
+
+  // auth 헤더 파싱
+  const authHeaders = _parseAuthHeaders(authText);
+
+  // UNION 검증 (UI 측 사전) — 단일 타입 입력 시 컬럼 수만큼 자동 확장
+  if (technique === 'union') {
+    if (unionTypes.length === 1 && unionCols > 1) {
+      for (let _i = 1; _i < unionCols; _i++) unionTypes.push(unionTypes[0]);
+    }
+    if (unionCols <= 0 || unionTypes.length !== unionCols) {
+      alert('UNION 컬럼 수와 타입 개수가 일치해야 합니다.');
+      return;
+    }
+    if (unionVisible !== null) {
+      const uvNum = parseInt(unionVisible);
+      if (isNaN(uvNum) || uvNum < 1 || uvNum > unionCols) {
+        alert(`visible 컬럼 번호는 1~${unionCols} 범위여야 합니다.`);
+        return;
+      }
+    }
+  }
+
+  // 엑셀 저장 이름 검증 + 기존 파일 확인
+  const saveExcel = document.getElementById('ext-save-excel').checked;
+  const excelName = (document.getElementById('ext-excel-name').value || '').trim();
+  if (saveExcel && !excelName) {
+    alert('엑셀 저장 시 파일 이름을 입력하세요.');
+    return;
+  }
+  let reuseExisting = false;
+  if (saveExcel && excelName) {
+    reuseExisting = await _checkAndAskReuse(excelName);
+  }
+
+  _resetExtractUI();
+  document.getElementById('ext-start-btn').disabled = true;
+
+  try {
+    const r = await fetch('/api/extract/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        target, method, body_type: bodyType, body_params: bodyParams,
+        param, technique, union_columns: unionCols, union_types: unionTypes,
+        union_visible: unionVisible ? parseInt(unionVisible) : null,
+        union_row_batch: unionRowBatch,
+        context_mode: ctxMode, context_value: ctxValue,
+        dbms: document.getElementById('ext-dbms-preset').value || '',
+        speed, timeout, cookies, auth_headers: authHeaders, union_hex: unionHex,
+        proxy_host: proxyHost, proxy_port: proxyPort,
+        base64_encode: document.getElementById('ext-base64-encode').checked,
+        save_excel: saveExcel,
+        excel_name: excelName || undefined,
+        reuse: reuseExisting,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      _showExtractError(j.error || '시작 실패');
+      document.getElementById('ext-start-btn').disabled = false;
+      return;
+    }
+    extractJobId = j.job_id;
+    document.getElementById('ext-fp-progress').classList.add('show');
+    _startExtractPoll();
+  } catch (e) {
+    _showExtractError('네트워크 오류: ' + e.message);
+    document.getElementById('ext-start-btn').disabled = false;
+  }
+}
+
+// ── 폴링 시작/종료 ──
+function _startExtractPoll() {
+  _stopExtractPoll();
+  extractPollTimer = setInterval(_extractPollOnce, 800);
+  _extractPollOnce(); // 초기 즉시 1회
+}
+function _stopExtractPoll() {
+  if (extractPollTimer) { clearInterval(extractPollTimer); extractPollTimer = null; }
+}
+
+// ── 추출 진행 중 액션 버튼 일괄 잠금/해제 ──
+// busy=true: extracting 진입 시 / busy=false: ready·error 복귀 시
+function _setExtractBusy(busy) {
+  document.getElementById('ext-dbms-info-btn').disabled = busy;
+  document.getElementById('ext-start-wizard-btn').disabled = busy;
+  document.querySelectorAll('#ext-wizard button').forEach(b => { b.disabled = busy; });
+  document.getElementById('ext-wizard').classList.toggle('ext-busy', busy);
+}
+
+// ── /status 1회 fetch ──
+async function _fetchExtractStatus() {
+  if (!extractJobId) return null;
+  const r = await fetch(`/api/extract/${encodeURIComponent(extractJobId)}/status`);
+  if (!r.ok) return null;
+  return await r.json();
+}
+
+// ── 폴링 1 cycle ──
+async function _extractPollOnce() {
+  const j = await _fetchExtractStatus();
+  if (!j) return;
+  _renderExtractStatus(j);
+  if (j.status === 'error' || j.status === 'cancelled' || j.status === 'completed') {
+    _stopExtractPoll();
+    document.getElementById('ext-start-btn').disabled = false;
+  }
+}
+
+// ── 상태별 UI 렌더 ──
+function _renderExtractStatus(j) {
+  // Fingerprint 진행 중
+  if (j.status === 'fingerprinting' || j.status === 'pending') {
+    const pct = j.progress || 0;
+    document.getElementById('ext-fp-fill').style.width = pct + '%';
+    document.getElementById('ext-fp-pct').textContent = pct + '%';
+    return;
+  }
+
+  // ready 진입 (fingerprint 완료) → fp 결과 + 액션 패널 노출
+  if (j.status === 'ready') {
+    document.getElementById('ext-fp-fill').style.width = '100%';
+    document.getElementById('ext-fp-pct').textContent = '100%';
+    document.getElementById('ext-fp-progress').classList.remove('show');
+    if (j.fingerprint) {
+      _renderFingerprint(j.fingerprint);
+    }
+    document.getElementById('ext-action-panel').hidden = false;
+    // ready 상태: [중단] 비활성 (진행 중 액션 없음), [초기화] 활성, 위저드 잠금 해제
+    document.getElementById('ext-stop-btn').disabled = true;
+    document.getElementById('ext-reset-btn').disabled = false;
+    _setExtractBusy(false);
+    // 액션 진행 박스: current_action_id 있으면 유지, 아니면 숨김
+    if (!j.current_action_id) {
+      document.getElementById('ext-action-progress-box').classList.remove('show');
+    }
+    // DBMS 정보가 캐시되어 있으면 자동 렌더
+    const info = (j.extracted || {}).dbms_info;
+    if (info && (info.version || info.user || info.current_db)) {
+      _renderDbmsInfo(info);
+    }
+    _renderExcelInfo(j);
+    return;
+  }
+
+  // extracting — 액션 진행 중
+  if (j.status === 'extracting') {
+    document.getElementById('ext-fp-progress').classList.remove('show');
+    document.getElementById('ext-action-panel').hidden = false;
+    // extracting 상태: [중단] 활성, [초기화] 활성, 위저드 잠금
+    document.getElementById('ext-stop-btn').disabled = false;
+    document.getElementById('ext-reset-btn').disabled = false;
+    _setExtractBusy(true);
+    _renderActionProgress(j);
+    _renderExcelInfo(j);
+    return;
+  }
+
+  if (j.status === 'error') {
+    _showExtractError(j.error || '알 수 없는 오류');
+    document.getElementById('ext-action-progress-box').classList.remove('show');
+    _setExtractBusy(false);
+    return;
+  }
+  if (j.status === 'cancelled') {
+    // 취소 완료 시 모든 추출 UI 초기화 → 처음 상태로 복귀
+    _resetExtractUI();
+    return;
+  }
+}
+
+// ── Fingerprint 결과 렌더 + 미지원 기법 안내 모달 ──
+function _renderFingerprint(fp) {
+  document.getElementById('ext-fp-result').hidden = false;
+  document.getElementById('ext-fp-dbms').textContent = fp.dbms || '-';
+  document.getElementById('ext-fp-technique').textContent = fp.technique || '-';
+  document.getElementById('ext-fp-context').textContent =
+    (fp.context === null || fp.context === '') ? 'numeric' : (fp.context || '-');
+  const uvIdx = fp.union_visible_idx;
+  document.getElementById('ext-fp-union-visible').textContent =
+    (typeof uvIdx === 'number' && uvIdx >= 0) ? String(uvIdx + 1) : '미사용';
+
+  // DBMS 자동 식별 실패 — 수동 선택 모달 (한 번만)
+  const reason = fp.failure_reason || '';
+  if (reason === 'dbms_detection' && !extractDbmsCache) {
+    _openDbmsSelectModal(fp);
+    return;
+  }
+  // 미지원 기법이 보고되면 재선택 모달 (한 번만)
+  const unsupp = fp.unsupported_techniques || [];
+  if (unsupp.length > 0 && !extractRetechCache) {
+    _openRetechniqueModal(fp);
+  }
+}
+
+// ── 액션 진행률 렌더 ──
+function _renderActionProgress(j) {
+  const box = document.getElementById('ext-action-progress-box');
+  box.classList.add('show');
+  const pct = (typeof j.action_progress === 'number' && j.action_progress >= 0)
+              ? j.action_progress : 0;
+  document.getElementById('ext-action-fill').style.width = pct + '%';
+  document.getElementById('ext-action-pct').textContent = pct + '%';
+  document.getElementById('ext-action-label').textContent =
+    j.current_action_id ? `진행 중: ${j.current_action_id}` : '액션 진행 중...';
+  const cur = j.action_current || 0, tot = j.action_total || 0;
+  document.getElementById('ext-action-detail').textContent =
+    tot > 0 ? `${cur} / ${tot}` : '-';
+}
+
+// ── DBMS 정보 카드 렌더 ──
+function _renderDbmsInfo(info) {
+  document.getElementById('ext-dbms-info-result').hidden = false;
+  document.getElementById('ext-info-version').textContent = info.version || '-';
+  document.getElementById('ext-info-user').textContent = info.user || '-';
+  document.getElementById('ext-info-current-db').textContent = info.current_db || '-';
+}
+
+// ── 엑셀 저장 정보 렌더 (save_excel=true인 경우만 노출) ──
+function _renderExcelInfo(j) {
+  const infoEl = document.getElementById('ext-excel-info');
+  if (!j.save_excel) { infoEl.hidden = true; return; }
+  infoEl.hidden = false;
+  // 저장 위치
+  const files = j.excel_files || [];
+  const filesEl = document.getElementById('ext-excel-files');
+  if (files.length) {
+    filesEl.textContent = '저장 위치: ' + files.map(f => './reports/' + f).join(', ');
+  } else {
+    filesEl.textContent = '(아직 저장된 파일 없음)';
+  }
+  // 갱신 내역 — 폴링마다 전체를 다시 그림
+  const updates = j.excel_updates || [];
+  const updatesEl = document.getElementById('ext-excel-updates');
+  if (updates.length === 0) {
+    updatesEl.textContent = '(없음)';
+  } else {
+    // textContent로 삽입하여 DB명·테이블명의 특수문자로 인한 렌더링 오염 방지
+    updatesEl.innerHTML = '';
+    updates.forEach(u => {
+      const div = document.createElement('div');
+      div.textContent = `· ${u.time}  ${u.summary}`;
+      updatesEl.appendChild(div);
+    });
+    updatesEl.scrollTop = updatesEl.scrollHeight;
+  }
+}
+
+// ── 에러 메시지 표시 ──
+function _showExtractError(msg) {
+  document.getElementById('ext-error-card').hidden = false;
+  document.getElementById('ext-error-msg').textContent = msg;
+}
+
+// ── 액션 호출 (dbms_info / databases / tables / columns / dump) ──
+//    409 충돌 시 alert 후 false 반환
+async function extractAction(opts) {
+  if (!extractJobId) { alert('실행 중인 추출 job이 없습니다.'); return false; }
+  // 액션 시작 시 이전 오류 메시지 클리어
+  document.getElementById('ext-error-card').hidden = true;
+  try {
+    const r = await fetch(`/api/extract/${encodeURIComponent(extractJobId)}/action`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(opts),
+    });
+    if (r.status === 409) {
+      const j = await r.json();
+      alert('다른 액션 실행 중입니다: ' + (j.current_action_id || '?'));
+      return false;
+    }
+    const j = await r.json();
+    if (!r.ok) {
+      _showExtractError(j.error || `${opts.action} 실패`);
+      return false;
+    }
+    return j;
+  } catch (e) {
+    _showExtractError('네트워크 오류: ' + e.message);
+    return false;
+  }
+}
+
+// ── 데이터 추출 시작 (Wizard 진입) ──
+async function extractStartWizard() {
+  document.getElementById('ext-wizard').hidden = false;
+  await _loadDbList();
+  _extractGotoStep('dbs');
+}
+
+// ── 위저드 단계 전환 ──
+function _extractGotoStep(step) {
+  ['dbs', 'tables', 'cols', 'dump'].forEach(s => {
+    const el = document.getElementById('ext-step-' + s);
+    if (el) el.classList.toggle('show', s === step);
+  });
+  // 단계 인디케이터 업데이트
+  const map = {dbs: 1, tables: 2, cols: 3, dump: 4};
+  const cur = map[step] || 1;
+  for (let i = 1; i <= 4; i++) {
+    const el = document.getElementById('ext-wstep-' + i);
+    if (!el) continue;
+    el.classList.toggle('active', i === cur);
+    el.classList.toggle('done', i < cur);
+  }
+}
+
+// ── 위저드 뒤로 ──
+function extractWizardBack(step) {
+  _extractGotoStep(step);
+}
+
+// ── DB 리스트 로드 (캐시 있으면 그대로, 없으면 액션 트리거 + 폴링) ──
+async function _loadDbList() {
+  const j0 = await _fetchExtractStatus();
+  const _arr = j0 && j0.extracted && j0.extracted.databases;
+  // [] 은 JS에서 truthy라 빈 배열도 캐시 히트로 잘못 분류됨 — 항목이 있을 때만 캐시 사용
+  const cached = (Array.isArray(_arr) && _arr.length > 0) ? _arr : null;
+  if (cached) {
+    _renderDbList(cached);
+    return;
+  }
+  const ack = await extractAction({action: 'databases'});
+  if (!ack) return;
+  if (ack.cached) {
+    const j = await _fetchExtractStatus();
+    _renderDbList((j && j.extracted && j.extracted.databases) || []);
+    return;
+  }
+  // 백그라운드 실행 — extracted.databases 채워질 때까지 폴링 (빈 배열은 falsy 처리)
+  const j2 = await _waitForExtracted(s => {
+    const arr = s.extracted && s.extracted.databases;
+    return Array.isArray(arr) && arr.length > 0;
+  });
+  _renderDbList((j2 && j2.extracted && j2.extracted.databases) || []);
+}
+
+// ── 테이블 리스트 로드 ──
+async function _loadTblList(db) {
+  extractCurrentDb = db;
+  document.getElementById('ext-cur-db').textContent = db;
+  const j0 = await _fetchExtractStatus();
+  const cached = (j0 && j0.extracted && j0.extracted.tables && j0.extracted.tables[db]) || null;
+  if (cached) {
+    _renderTblList(cached);
+    return;
+  }
+  // 캐시 미스 — 이전 회차 잔존 리스트 즉시 제거
+  document.getElementById('ext-tbl-list').innerHTML = '';
+  const ack = await extractAction({action: 'tables', database: db});
+  if (!ack) return;
+  if (ack.cached) {
+    const j = await _fetchExtractStatus();
+    _renderTblList((j && j.extracted && j.extracted.tables && j.extracted.tables[db]) || []);
+    return;
+  }
+  const j2 = await _waitForExtracted(s =>
+    (s.extracted && s.extracted.tables && s.extracted.tables[db]));
+  _renderTblList((j2 && j2.extracted && j2.extracted.tables && j2.extracted.tables[db]) || []);
+}
+
+// ── 컬럼 리스트 로드 ──
+async function _loadColList(db, tbl) {
+  extractCurrentTbl = tbl;
+  document.getElementById('ext-cur-tbl').textContent = tbl;
+  document.getElementById('ext-cur-tbl-2').textContent = tbl;
+  const key = `${db}.${tbl}`;
+  const j0 = await _fetchExtractStatus();
+  const cached = (j0 && j0.extracted && j0.extracted.columns && j0.extracted.columns[key]) || null;
+  if (cached) {
+    _renderColList(cached);
+    return;
+  }
+  // 캐시 미스 — 이전 회차 잔존 리스트 즉시 제거
+  document.getElementById('ext-col-list').innerHTML = '';
+  const ack = await extractAction({action: 'columns', database: db, table: tbl});
+  if (!ack) return;
+  if (ack.cached) {
+    const j = await _fetchExtractStatus();
+    _renderColList((j && j.extracted && j.extracted.columns && j.extracted.columns[key]) || []);
+    return;
+  }
+  const j2 = await _waitForExtracted(s =>
+    (s.extracted && s.extracted.columns && s.extracted.columns[key]));
+  _renderColList((j2 && j2.extracted && j2.extracted.columns && j2.extracted.columns[key]) || []);
+}
+
+// ── extracted[키] 채워질 때까지 임시 폴링 (400ms × 최대 ~5분) ──
+async function _waitForExtracted(predicate, maxMs = 300000) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    const s = await _fetchExtractStatus();
+    if (!s) { await _sleep(400); continue; }
+    if (s.status === 'error' || s.status === 'cancelled') return s;
+    if (predicate(s)) return s;
+    await _sleep(400);
+  }
+  return null;
+}
+function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── DB 리스트 렌더 (XSS-safe textContent) ──
+function _renderDbList(dbs) {
+  const list = document.getElementById('ext-db-list');
+  list.innerHTML = '';
+  if (!dbs || !dbs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ext-list-empty';
+    empty.textContent = '데이터베이스가 없습니다.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const db of dbs) {
+    const item = document.createElement('div');
+    item.className = 'ext-list-item';
+    item.textContent = db;
+    item.addEventListener('click', async () => {
+      _extractGotoStep('tables');
+      await _loadTblList(db);
+    });
+    list.appendChild(item);
+  }
+}
+
+// ── 테이블 리스트 렌더 ──
+function _renderTblList(tbls) {
+  const list = document.getElementById('ext-tbl-list');
+  list.innerHTML = '';
+  if (!tbls || !tbls.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ext-list-empty';
+    empty.textContent = '테이블이 없습니다.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const tbl of tbls) {
+    const item = document.createElement('div');
+    item.className = 'ext-list-item';
+    item.textContent = tbl;
+    item.addEventListener('click', async () => {
+      extractColSel = new Set();
+      _extractGotoStep('cols');
+      await _loadColList(extractCurrentDb, tbl);
+    });
+    list.appendChild(item);
+  }
+}
+
+// ── 컬럼 리스트 렌더 (선택 가능 — toggle) ──
+function _renderColList(cols) {
+  const list = document.getElementById('ext-col-list');
+  list.innerHTML = '';
+  if (!cols || !cols.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ext-list-empty';
+    empty.textContent = '컬럼이 없습니다.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const col of cols) {
+    const item = document.createElement('div');
+    item.className = 'ext-list-item';
+    item.dataset.col = col;
+    item.textContent = col;
+    if (extractColSel.has(col)) item.classList.add('selected');
+    item.addEventListener('click', () => {
+      if (extractColSel.has(col)) {
+        extractColSel.delete(col);
+        item.classList.remove('selected');
+      } else {
+        extractColSel.add(col);
+        item.classList.add('selected');
+      }
+    });
+    list.appendChild(item);
+  }
+}
+
+// ── 컬럼 전체 선택/해제 ──
+function extractColAll() {
+  const items = document.querySelectorAll('#ext-col-list .ext-list-item');
+  if (!items.length) return;
+  // 모두 선택된 상태면 해제, 아니면 모두 선택
+  const allSelected = [...items].every(it => it.classList.contains('selected'));
+  if (allSelected) {
+    extractColSel = new Set();
+    items.forEach(it => it.classList.remove('selected'));
+  } else {
+    extractColSel = new Set([...items].map(it => it.dataset.col));
+    items.forEach(it => it.classList.add('selected'));
+  }
+}
+
+// ── 컬럼 선택 완료 → dump 단계 ──
+async function extractColConfirm() {
+  if (extractColSel.size === 0) {
+    alert('컬럼을 1개 이상 선택하세요.');
+    return;
+  }
+  _extractGotoStep('dump');
+  // 행 추출 결과 영역 — 현재 (db, tbl)의 캐시 dump 있으면 표시, 없으면 초기화
+  const key = `${extractCurrentDb}.${extractCurrentTbl}`;
+  const j = await _fetchExtractStatus();
+  const dump = (j && j.extracted && j.extracted.dumps && j.extracted.dumps[key]) || null;
+  const wrap = document.getElementById('ext-dump-result-wrap');
+  if (dump && Array.isArray(dump.rows)) {
+    _renderDumpTable(dump.columns, dump.rows);
+  } else {
+    document.getElementById('ext-dump-thead').innerHTML = '';
+    document.getElementById('ext-dump-tbody').innerHTML = '';
+    wrap.hidden = true;
+  }
+}
+
+// ── Dump 1단계: estimate-only POST → 모달 ──
+async function extractDumpStart() {
+  if (!extractCurrentDb || !extractCurrentTbl) {
+    alert('DB/테이블이 선택되지 않았습니다.');
+    return;
+  }
+  if (extractColSel.size === 0) {
+    alert('컬럼을 1개 이상 선택하세요.');
+    return;
+  }
+  const cols = [...extractColSel];
+
+  const ack = await extractAction({
+    action: 'dump',
+    database: extractCurrentDb,
+    table: extractCurrentTbl,
+    columns: cols,
+    confirm: false,
+  });
+  if (!ack) return;
+  // 견적 모달 열기
+  extractEstCache = {db: extractCurrentDb, tbl: extractCurrentTbl, cols};
+  const est = ack.estimate || {};
+  const resumeFrom = ack.resume_from || 0;
+  document.getElementById('ext-est-table').textContent = `${extractCurrentDb}.${extractCurrentTbl}`;
+  document.getElementById('ext-est-cols').textContent = String(cols.length);
+  // 이어받기 시 "N행 남음 (완료: k행)" 형태로 표시
+  const rowsText = resumeFrom > 0
+    ? `${est.rows ?? '-'}행 남음 (완료: ${resumeFrom}행)`
+    : String(est.rows ?? '-');
+  document.getElementById('ext-est-rows').textContent = rowsText;
+  document.getElementById('ext-est-reqs').textContent = String(est.requests || '-');
+  const sec = est.seconds || 0;
+  let etaText;
+  if (sec < 60)        etaText = `${sec.toFixed(1)}초`;
+  else if (sec < 3600) etaText = `${(sec / 60).toFixed(1)}분`;
+  else                 etaText = `${(sec / 3600).toFixed(2)}시간`;
+  document.getElementById('ext-est-eta').textContent = etaText;
+  document.getElementById('ext-est-confirm-btn').textContent = resumeFrom > 0 ? '이어서 추출' : '확인 후 시작';
+  document.getElementById('ext-estimate-modal').classList.add('show');
+}
+
+// ── Dump 2단계: confirm:true ──
+async function extractEstimateConfirm() {
+  if (!extractEstCache) return;
+  const {db, tbl, cols} = extractEstCache;
+  document.getElementById('ext-estimate-modal').classList.remove('show');
+  const ack = await extractAction({
+    action: 'dump', database: db, table: tbl, columns: cols, confirm: true,
+  });
+  if (!ack) return;
+  // dump 시작 확정 — 폴링 주기(800ms)를 기다리지 않고 즉시 잠금
+  _setExtractBusy(true);
+  // 백그라운드 dump 완료 대기 → status가 ready로 복귀한 뒤 결과 렌더
+  // (dump 시작 즉시 key가 등록되므로 key 존재 여부만 체크하면 빈 행이 반환됨)
+  const key = `${db}.${tbl}`;
+  const s = await _waitForExtracted(st =>
+    st.status === 'ready' && !!(st.extracted && st.extracted.dumps && st.extracted.dumps[key]));
+  if (!s) return;
+  const dump = s.extracted.dumps[key];
+  if (dump) _renderDumpTable(dump.columns, dump.rows);
+  extractEstCache = null;
+}
+
+// ── Dump 2단계 취소 (모달만 닫음) ──
+function extractEstimateCancel() {
+  document.getElementById('ext-estimate-modal').classList.remove('show');
+  extractEstCache = null;
+}
+
+// ── Dump 결과 표 렌더 (XSS-safe textContent) ──
+function _renderDumpTable(cols, rows) {
+  const wrap  = document.getElementById('ext-dump-result-wrap');
+  const thead = document.getElementById('ext-dump-thead');
+  const tbody = document.getElementById('ext-dump-tbody');
+  thead.innerHTML = '';
+  tbody.innerHTML = '';
+
+  const trh = document.createElement('tr');
+  for (const c of (cols || [])) {
+    const th = document.createElement('th');
+    th.textContent = c;
+    trh.appendChild(th);
+  }
+  thead.appendChild(trh);
+
+  for (const row of (rows || [])) {
+    const tr = document.createElement('tr');
+    for (const cell of row) {
+      const td = document.createElement('td');
+      td.textContent = (cell === null || cell === undefined) ? '' : String(cell);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  wrap.hidden = false;
+}
+
+// ── 입력 폼 DBMS 사전 선택 — SQLite+Error 경고 ──
+function onDbmsPresetChange() {
+  const dbms = document.getElementById('ext-dbms-preset').value;
+  const tech = document.getElementById('ext-technique').value;
+  document.getElementById('ext-dbms-preset-warn').hidden = !(dbms === 'SQLite' && tech === 'error');
+}
+
+// ── DBMS 수동 선택 모달 (자동 식별 실패 시) ──
+function _openDbmsSelectModal(fp) {
+  extractDbmsCache = {technique: fp.technique};
+  document.getElementById('ext-dbms-modal-msg').textContent =
+    fp.message || 'DBMS를 자동으로 식별하지 못했습니다. 직접 선택해주세요.';
+  document.getElementById('ext-dbms-modal-select').value = '';
+  document.getElementById('ext-dbms-modal-warn').hidden = true;
+  document.getElementById('ext-dbms-modal-confirm-btn').disabled = true;
+  document.getElementById('ext-dbms-modal').classList.add('show');
+}
+
+// ── DBMS 모달 select 변경 시 SQLite+Error 경고 + 확인 버튼 활성 ──
+function onDbmsModalSelectChange() {
+  const dbms       = document.getElementById('ext-dbms-modal-select').value;
+  const fp         = document.getElementById('ext-fp-technique').textContent;
+  const isConflict = (dbms === 'SQLite' && fp === 'error');
+  document.getElementById('ext-dbms-modal-warn').hidden = !isConflict;
+  // SQLite+Error 충돌이면 확인 버튼 비활성 (클라이언트 가드)
+  document.getElementById('ext-dbms-modal-confirm-btn').disabled = !dbms || isConflict;
+}
+
+// ── DBMS 수동 선택 확인 ──
+async function extractDbmsSelectConfirm() {
+  const dbms = document.getElementById('ext-dbms-modal-select').value;
+  if (!dbms) { alert('DBMS를 선택하세요.'); return; }
+  document.getElementById('ext-dbms-modal').classList.remove('show');
+  try {
+    const r = await fetch(`/api/extract/${encodeURIComponent(extractJobId)}/retechnique`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dbms}),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      extractDbmsCache = null;
+      _showExtractError(j.error || 'DBMS 설정 실패');
+      return;
+    }
+    // fp 결과 숨기고 재 fingerprint 진행
+    document.getElementById('ext-fp-result').hidden = true;
+    document.getElementById('ext-fp-progress').classList.add('show');
+    document.getElementById('ext-fp-fill').style.width = '0%';
+    document.getElementById('ext-fp-pct').textContent = '0%';
+    extractDbmsCache = null;
+    _startExtractPoll();
+  } catch (e) {
+    extractDbmsCache = null;
+    _showExtractError('네트워크 오류: ' + e.message);
+  }
+}
+
+// ── DBMS 수동 선택 취소 — 에러 안내 후 입력 폼 복귀 ──
+function extractDbmsSelectCancel() {
+  document.getElementById('ext-dbms-modal').classList.remove('show');
+  extractDbmsCache = null;
+  _stopExtractPoll();
+  document.getElementById('ext-action-panel').hidden = true;
+  document.getElementById('ext-start-btn').disabled = false;
+  _showExtractError('DBMS를 식별하지 못했습니다. 입력 폼에서 DBMS를 직접 선택하거나 다시 시도하세요.');
+}
+
+// ── 기법 재선택 모달 ──
+function _openRetechniqueModal(fp) {
+  // 후보 결정: error 실패 → boolean / union 실패 → boolean / boolean 실패 → (없음)
+  const cur = fp.technique;
+  let fallback = '';
+  if (cur === 'error')      fallback = 'boolean';
+  else if (cur === 'union') fallback = 'boolean';
+  else if (cur === 'boolean') fallback = '';
+  if (!fallback) {
+    _showExtractError(fp.message || `현재 기법(${cur})이 지원되지 않으며 fallback이 없습니다.`);
+    return;
+  }
+  extractRetechCache = {fallback};
+  document.getElementById('ext-retech-msg').textContent = fp.message || '현재 기법이 지원되지 않습니다.';
+  document.getElementById('ext-retech-from').textContent = cur || '-';
+  document.getElementById('ext-retech-to').textContent = fallback;
+  document.getElementById('ext-retech-modal').classList.add('show');
+}
+
+// ── 기법 재선택 확인 ──
+async function extractRetechniqueConfirm() {
+  if (!extractRetechCache || !extractJobId) return;
+  const {fallback} = extractRetechCache;
+  document.getElementById('ext-retech-modal').classList.remove('show');
+  try {
+    const r = await fetch(`/api/extract/${encodeURIComponent(extractJobId)}/retechnique`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({technique: fallback}),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      _showExtractError(j.error || '기법 전환 실패');
+      return;
+    }
+    // fp 결과 hide → 재 fingerprint 진행
+    document.getElementById('ext-fp-result').hidden = true;
+    document.getElementById('ext-fp-progress').classList.add('show');
+    document.getElementById('ext-fp-fill').style.width = '0%';
+    document.getElementById('ext-fp-pct').textContent = '0%';
+    extractRetechCache = null;
+    _startExtractPoll();
+  } catch (e) {
+    _showExtractError('네트워크 오류: ' + e.message);
+  }
+}
+
+// ── 기법 재선택 취소 — 폴링 중단 + 에러 안내 (재오픈 루프 방지) ──
+function extractRetechniqueCancel() {
+  document.getElementById('ext-retech-modal').classList.remove('show');
+  extractRetechCache = null;
+  _stopExtractPoll();
+  document.getElementById('ext-action-panel').hidden = true;
+  document.getElementById('ext-start-btn').disabled = false;
+  _showExtractError('현재 기법이 지원되지 않습니다. 입력 폼에서 다른 기법을 선택 후 다시 시작하세요.');
+}
+
+// ── 추출 중단 (현재 액션만 취소, 누적 데이터 유지 후 ready 복귀) ──
+async function extractStop() {
+  if (!extractJobId) return;
+  if (!confirm('진행 중인 작업을 중단하시겠습니까?\n추출된 데이터는 유지됩니다.')) return;
+  try {
+    await fetch(`/api/extract/${encodeURIComponent(extractJobId)}/cancel`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reset: false}),  // 중단 의도 — ready 복귀
+    });
+  } catch (e) { /* ignore */ }
+  // 폴링 유지 — 서버에서 ready 복귀 시 액션 패널 그대로 사용 가능
+  document.getElementById('ext-action-progress-box').classList.remove('show');
+}
+
+// ── 추출 초기화 (Fingerprint 포함 전체 초기화, 처음으로 복귀) ──
+async function extractReset() {
+  if (!extractJobId) {
+    _stopExtractPoll();
+    _resetExtractUI();
+    return;
+  }
+  const j = await _fetchExtractStatus();
+  const status = j ? j.status : null;
+
+  // 누적 데이터 유무 확인 (confirm 문구 분기)
+  const ext = (j && j.extracted) || {};
+  const hasData = !!(
+    (ext.databases && ext.databases.length) ||
+    (ext.dbms_info && Object.values(ext.dbms_info).some(Boolean)) ||
+    (ext.tables && Object.keys(ext.tables).length) ||
+    (ext.dumps && Object.keys(ext.dumps).length)
+  );
+
+  if (status === 'extracting' || status === 'fingerprinting') {
+    // 진행 중 → 작업 폐기 경고
+    if (!confirm('진행 중인 작업이 폐기됩니다. 초기화하시겠습니까?')) return;
+  } else if (hasData) {
+    // ready 상태 + 누적 데이터 있음 → 데이터 폐기 경고
+    if (!confirm('추출된 데이터가 모두 사라집니다. 초기화하시겠습니까?')) return;
+  }
+  // 데이터 없는 ready 상태는 confirm 없이 즉시 초기화
+
+  // 서버 job을 GC 대상으로 마킹 — 상태 무관하게 항상 호출
+  try {
+    await fetch(`/api/extract/${encodeURIComponent(extractJobId)}/cancel`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reset: true}),  // 초기화 의도 — 완전 종료
+    });
+  } catch (e) { /* ignore */ }
+
+  _stopExtractPoll();
+  _resetExtractUI();
+}
+
+
+// ── 엑셀 취합 ────────────────────────────────────────────────────────────────
+let _mrgFiles = [];         // 선택된 File 객체 배열
+let _mrgDownloadName = '';  // 서버가 반환한 결과 파일명
+
+function _mrgRenderFileList() {
+  const list = document.getElementById('mrg-file-list');
+  list.innerHTML = '';
+  _mrgFiles.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.className = 'mrg-file-item';
+    const sizeMb = (f.size / 1024 / 1024).toFixed(2);
+    item.innerHTML = `<span class="mrg-file-name" title="${f.name}">${f.name}</span>`
+      + `<span class="mrg-file-size">${sizeMb} MB</span>`
+      + `<button class="mrg-file-del" title="제거" onclick="mrgRemoveFile(${i})">✕</button>`;
+    list.appendChild(item);
+  });
+}
+
+function mrgFilesAdded(fileList) {
+  // 기존 목록에 새 파일 추가 (중복 파일명 제거)
+  const existing = new Set(_mrgFiles.map(f => f.name));
+  Array.from(fileList).forEach(f => {
+    if (!existing.has(f.name)) {
+      _mrgFiles.push(f);
+      existing.add(f.name);
+    }
+  });
+  _mrgRenderFileList();
+  // 파일 input 초기화 — 같은 파일 재선택 가능하도록
+  document.getElementById('mrg-file-input').value = '';
+}
+
+function mrgRemoveFile(idx) {
+  _mrgFiles.splice(idx, 1);
+  _mrgRenderFileList();
+}
+
+function mrgDragOver(e) {
+  e.preventDefault();
+  document.getElementById('mrg-dropzone').classList.add('over');
+}
+
+function mrgDragLeave(e) {
+  document.getElementById('mrg-dropzone').classList.remove('over');
+}
+
+function mrgDrop(e) {
+  e.preventDefault();
+  document.getElementById('mrg-dropzone').classList.remove('over');
+  mrgFilesAdded(e.dataTransfer.files);
+}
+
+async function mrgStart() {
+  const errEl = document.getElementById('mrg-error');
+  errEl.hidden = true;
+
+  if (_mrgFiles.length === 0) {
+    errEl.textContent = '취합할 파일을 선택하세요.';
+    errEl.hidden = false;
+    return;
+  }
+
+  const outName = document.getElementById('mrg-out-name').value.trim() || 'result';
+  const btn = document.getElementById('mrg-btn');
+  const resetBtn = document.getElementById('mrg-reset-btn');
+  btn.disabled = true;
+  resetBtn.disabled = true;
+  btn.textContent = '취합 중...';
+
+  const form = new FormData();
+  _mrgFiles.forEach(f => form.append('files', f));
+  form.append('out_name', outName);
+
+  try {
+    const res = await fetch('/api/merge', { method: 'POST', body: form });
+    const data = await res.json();
+
+    if (!res.ok) {
+      errEl.textContent = data.error || '서버 오류가 발생했습니다.';
+      errEl.hidden = false;
+      return;
+    }
+
+    _mrgDownloadName = data.download_name;
+    _mrgRenderResult(data);
+  } catch (e) {
+    errEl.textContent = `요청 오류: ${e.message}`;
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    resetBtn.disabled = false;
+    btn.innerHTML = '<span>⚡</span> 취합 시작';
+  }
+}
+
+function _mrgRenderResult(data) {
+  // 통계
+  document.getElementById('mrg-stat-rows').textContent = data.total_rows.toLocaleString();
+  document.getElementById('mrg-stat-cols').textContent = data.columns.length.toLocaleString();
+  const processed = (data.per_file || []).filter(f => !f.skipped).length;
+  document.getElementById('mrg-stat-files').textContent = processed.toLocaleString();
+
+  // 스킵 파일 경고
+  const skipWarn = document.getElementById('mrg-skip-warn');
+  if (data.skipped_files && data.skipped_files.length > 0) {
+    skipWarn.textContent = `⚠ 처리되지 않은 파일 ${data.skipped_files.length}개: ${data.skipped_files.join(', ')}`;
+    skipWarn.hidden = false;
+  } else {
+    skipWarn.hidden = true;
+  }
+
+  // 컬럼 칩 목록
+  const colList = document.getElementById('mrg-col-list');
+  colList.innerHTML = '';
+  (data.columns || []).forEach(c => {
+    const chip = document.createElement('span');
+    chip.className = 'mrg-col-chip' + (c === '출처파일' ? ' origin' : '');
+    chip.textContent = c;
+    colList.appendChild(chip);
+  });
+
+  // 파일별 처리 현황 테이블
+  const tbody = document.getElementById('mrg-per-file-body');
+  tbody.innerHTML = '';
+  (data.per_file || []).forEach(f => {
+    const tr = document.createElement('tr');
+    const newColText = f.new_columns && f.new_columns.length > 0
+      ? `<span class="new-cols">+${f.new_columns.length}개</span>`
+      : '—';
+    const status = f.skipped
+      ? `<span class="skipped">오류: ${f.error || '알 수 없음'}</span>`
+      : `<span style="color:var(--green)">완료</span>`;
+    tr.innerHTML = `<td>${f.name}</td><td>${f.sheets_read}</td><td>${f.rows_added.toLocaleString()}</td><td>${newColText}</td><td>${status}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('mrg-result-card').hidden = false;
+}
+
+function mrgDownload() {
+  if (!_mrgDownloadName) return;
+  const a = document.createElement('a');
+  a.href = `/api/merge/download?name=${encodeURIComponent(_mrgDownloadName)}`;
+  a.download = _mrgDownloadName;
+  a.click();
+}
+
+function mrgReset() {
+  // 선택된 파일이나 결과가 없으면 confirm 없이 즉시 초기화
+  const hasFiles = _mrgFiles.length > 0;
+  const hasResult = !document.getElementById('mrg-result-card').hidden;
+  if ((hasFiles || hasResult) &&
+      !confirm('선택한 파일 목록과 취합 결과 화면이 초기화됩니다.\n저장된 결과 파일은 그대로 유지됩니다.\n초기화하시겠습니까?')) return;
+
+  // 상태 초기화
+  _mrgFiles = [];
+  _mrgDownloadName = '';
+
+  // UI 초기화
+  _mrgRenderFileList();
+  document.getElementById('mrg-out-name').value = '';
+  document.getElementById('mrg-error').hidden = true;
+  document.getElementById('mrg-result-card').hidden = true;
+}
+
+</script>
+</body>
+</html>
