@@ -138,7 +138,7 @@ MySQL/MariaDB에는 XPATH 문자열이 알파벳으로 시작하면 MySQL이 유
 | `true_ref_text` | `Optional[str]` | dual baseline — `AND (1=1)` reference 응답 |
 | `false_ref_text` | `Optional[str]` | dual baseline — `AND (1=0)` reference 응답 |
 | `_session` | `requests.Session` | `_build_session()`으로 생성, 종료 시 close 필수 |
-| `cancelled` | `bool` | 사용자 취소 플래그 (`_send`에서 체크 → `InterruptedError`) |
+| `cancelled` | `bool` | 사용자 취소 플래그. `_send` 요청 직전 체크 + 요청 간 딜레이를 `_throttle()`이 50ms 간격 폴링 → set 시 진행 중 1건만 마치고 즉시 `InterruptedError` |
 | `_throttle_retried` | `bool` | 429/503 자동 감속 1회 한정 플래그 |
 
 ### `extracted` dict (누적 결과)

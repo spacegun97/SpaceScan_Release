@@ -97,7 +97,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
          auth_headers: Optional[Dict[str, str]] = None,
-         render: bool = False) -> Dict[str, Any]:
+         render: bool = False, stop_event=None) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "module":       "Path Traversal",
         "target":       target_url,
@@ -118,7 +118,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
             progress_cb(int(cur / total * 90) if total else 0, 100)
     pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages,
                          cookies, progress_cb=crawl_cb, proxies=proxies,
-                         auth_headers=auth_headers, render=render)
+                         auth_headers=auth_headers, render=render,
+                         stop_event=stop_event)
     debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
                          "path_traversal", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
 

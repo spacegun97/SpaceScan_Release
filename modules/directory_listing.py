@@ -9,6 +9,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 from typing import Dict, Any, Set, Callable, Optional, List, Tuple
 from . import _crawl
+from ._cancel import wait_or_cancel
 
 LISTING_SIGNATURES = [
     r"Index of /",
@@ -27,7 +28,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
          auth_headers: Optional[Dict[str, str]] = None,
-         render: bool = False) -> Dict[str, Any]:
+         render: bool = False, stop_event=None) -> Dict[str, Any]:
     result = {
         "module":       "Directory Listing",
         "target":       target_url,
@@ -48,7 +49,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
             progress_cb(int(cur / total * 50) if total else 0, 100)
     pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages, cookies,
                          progress_cb=crawl_cb, proxies=proxies,
-                         auth_headers=auth_headers, render=render)
+                         auth_headers=auth_headers, render=render,
+                         stop_event=stop_event)
     debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
                          "directory_listing", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
     endpoints = {p["path"] for p in pages}
@@ -65,7 +67,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     for idx, dir_path in enumerate(sorted(directories)):
         url = base + dir_path
         try:
-            time.sleep(delay)
+            wait_or_cancel(stop_event, delay)
             resp = requests.get(url, timeout=timeout, verify=False,
                                 allow_redirects=True, cookies=cookies,
                                 proxies=proxies, headers=auth_headers or {})

@@ -314,6 +314,25 @@ def _is_waf_response(ctx: ExtractCtx, resp: requests.Response) -> bool:
     return False
 
 
+def _throttle(ctx: ExtractCtx, secs: Optional[float] = None) -> None:
+    """딜레이 대기 — 대기 도중 [중단](ctx.cancelled)되면 즉시 InterruptedError를 던진다.
+
+    requests는 블로킹이라 이미 전송된 1건은 끊지 못하지만, 요청 사이 딜레이는
+    50ms 간격 폴링으로 즉시 중단에 반응한다(긴 delay에서도 대기를 곧바로 끊음).
+    secs=None이면 ctx.delay를 사용한다.
+    """
+    remaining = ctx.delay if secs is None else secs
+    while remaining > 0:
+        if ctx.cancelled:
+            raise InterruptedError("user cancelled")
+        step = 0.05 if remaining > 0.05 else remaining
+        time.sleep(step)
+        remaining -= step
+    # delay가 0(속도 6단계)이어도 마지막에 한 번은 검사
+    if ctx.cancelled:
+        raise InterruptedError("user cancelled")
+
+
 def _send(ctx: ExtractCtx, payload: str) -> requests.Response:
     """추출 모드 전용 요청 전송 — 사전/사후 netloc 검증 + WAF 가드 + 재시도.
 
@@ -329,7 +348,7 @@ def _send(ctx: ExtractCtx, payload: str) -> requests.Response:
     while True:
         if ctx.cancelled:
             raise InterruptedError("user cancelled")
-        time.sleep(ctx.delay)
+        _throttle(ctx)
 
         parsed = urlparse(ctx.target_url)
         # 사전 검증 — allowed_netloc 기준 (외부 도메인 페이로드 유출 차단)
@@ -366,7 +385,7 @@ def _send(ctx: ExtractCtx, payload: str) -> requests.Response:
             if conn_retried:
                 raise
             conn_retried = True
-            time.sleep(1.0)
+            _throttle(ctx, 1.0)
             continue
 
         # 사후 검증 — redirect 후 외부 도메인 이탈 차단
@@ -378,7 +397,7 @@ def _send(ctx: ExtractCtx, payload: str) -> requests.Response:
             if not ctx._throttle_retried:
                 ctx._throttle_retried = True
                 ctx.delay = min(ctx.delay * 2 if ctx.delay > 0 else 1.0, 5.0)
-                time.sleep(ctx.delay)
+                _throttle(ctx)
                 continue
             # 2회째도 rate limit → 추출 중단 신호
             raise WAFBlockedError(f"rate limit persisted (status={resp.status_code})")

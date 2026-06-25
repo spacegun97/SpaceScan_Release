@@ -98,3 +98,4 @@ sql_injection 모듈과 동일하게 `_crawl.py`를 공유한다.
 | `proxies` | dict \| None | None | `{"http": ..., "https": ...}` 형식의 프록시 설정 |
 | `auth_headers` | dict \| None | None | 모든 HTTP 요청 헤더에 영구 부착 (Authorization 등) |
 | `render` | bool | False | JS 렌더링 활성화. DOM 렌더링·네트워크 인터셉션·JSON 채굴. XHR 포인트는 `page["points"]`로 직접 패턴 검사됨 |
+| `stop_event` | Event \| None | None | [중단] 신호. set 시 크롤(요청 발생 단계)의 페이지 진입·딜레이 대기에서 `wait_or_cancel()`이 `ScanCancelled`를 던져 즉시 중단. `_run_scan()`이 주입 |

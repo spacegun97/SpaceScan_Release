@@ -76,5 +76,6 @@
 | `progress_cb` | callable \| None | None | 하위 진행률 보고 콜백 `(current, total)`. 크롤링 0~50%, 디렉토리 점검 50~100% 범위로 보고 |
 | `auth_headers` | dict \| None | None | 모든 HTTP 요청 헤더에 영구 부착 (Authorization 등) |
 | `render` | bool | False | JS 렌더링 활성화. SPA 동적 경로를 포함하여 더 많은 디렉토리 후보를 수집한다 |
+| `stop_event` | Event \| None | None | [중단] 신호. set 시 크롤·디렉토리 점검의 요청 직전·딜레이 대기에서 `wait_or_cancel()`이 `ScanCancelled`를 던져 즉시 중단. `_run_scan()`이 주입 |
 
 **GUI:** 스캔 설정 폼의 "최대 크롤링 페이지" 입력 필드

@@ -9,6 +9,7 @@ import time
 import requests
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Callable, Optional
+from ._cancel import wait_or_cancel
 
 # ── 카테고리 → 한국어 설명 매핑 ──────────────────────────────────────────
 CATEGORIES: Dict[str, str] = {
@@ -225,7 +226,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          cookies: Optional[Dict[str, str]] = None,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
-         auth_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+         auth_headers: Optional[Dict[str, str]] = None,
+         stop_event=None) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "module":       "Default & Sample Pages",
         "target":       target_url,
@@ -271,7 +273,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
 
             if url not in seen_urls:
                 try:
-                    time.sleep(delay)  # 속도 조절 딜레이
+                    wait_or_cancel(stop_event, delay)  # 속도 조절 딜레이 (+ [중단] 검사)
                     resp = requests.get(url, timeout=timeout, verify=False,
                                         allow_redirects=False, cookies=cookies,
                                         proxies=proxies, headers=auth_headers or {})

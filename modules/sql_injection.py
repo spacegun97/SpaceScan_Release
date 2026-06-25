@@ -11,6 +11,7 @@ from urllib.parse import urlparse, urlunparse
 from typing import Dict, Any, List, Set, Tuple, Optional, Callable
 
 from . import _crawl
+from ._cancel import wait_or_cancel
 from ._sqli_util import (
     WAF_KEYWORDS, DBMS_ERROR_VECTORS, DB_ERROR_SIGNATURES,
     parse_input_points, similarity, gen_marker, build_dynamic_contexts,
@@ -58,7 +59,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
          auth_headers: Optional[Dict[str, str]] = None,
-         render: bool = False) -> Dict[str, Any]:
+         render: bool = False, stop_event=None) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "module":       "SQL Injection",
         "target":       target_url,
@@ -79,7 +80,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
             progress_cb(int(cur / total * 40) if total else 0, 100)
     pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages, cookies,
                          progress_cb=crawl_cb, proxies=proxies,
-                         auth_headers=auth_headers, render=render)
+                         auth_headers=auth_headers, render=render,
+                         stop_event=stop_event)
     debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
                          "sql_injection", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
 
@@ -142,21 +144,24 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     try:
         total_points = len(input_points)
         for idx, point in enumerate(input_points):
+            # [중단] 검사 — 입력 포인트 진입 시 즉시 탈출
+            wait_or_cancel(stop_event, 0)
+
             # Error-based 스캔 (Generic → DBMS-specific 2단계)
             error_findings, vulnerable_params = _scan_error_based(
-                point, timeout, delay, session, base_netloc
+                point, timeout, delay, session, base_netloc, stop_event
             )
             all_findings.extend(error_findings)
 
             # Boolean-based 스캔 (Error-based에서 취약 확인된 파라미터는 제외, Dynamic Masking 적용)
             bool_findings = _scan_boolean_based(
-                point, timeout, delay, session, vulnerable_params, base_netloc
+                point, timeout, delay, session, vulnerable_params, base_netloc, stop_event
             )
             all_findings.extend(bool_findings)
 
             # Inline Query 스캔 (반사 기반 탐지 — 이전 기법에서 확인된 파라미터는 제외)
             inline_findings = _scan_inline_query(
-                point, timeout, delay, session, vulnerable_params, base_netloc
+                point, timeout, delay, session, vulnerable_params, base_netloc, stop_event
             )
             all_findings.extend(inline_findings)
 
@@ -176,7 +181,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
 
 def _scan_error_based(point: Dict, timeout: int, delay: float,
                       session: requests.Session,
-                      base_netloc: str) -> Tuple[List[Dict], Set[str]]:
+                      base_netloc: str, stop_event=None) -> Tuple[List[Dict], Set[str]]:
     """입력 포인트에 대해 Error-based SQLi 탐지를 수행한다.
 
     2단계 구성:
@@ -200,7 +205,7 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
     first_param = visible[0] if visible else next(iter(params))
 
     try:
-        time.sleep(delay)
+        wait_or_cancel(stop_event, delay)
         resp = _inject_and_request(session, point, first_param, "'",
                                    timeout, base_netloc)
     except Exception:
@@ -227,7 +232,7 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
 
         for payload in ERROR_PAYLOADS[start_idx:]:
             try:
-                time.sleep(delay)
+                wait_or_cancel(stop_event, delay)
                 resp = _inject_and_request(session, point, param, payload,
                                            timeout, base_netloc)
             except Exception:
@@ -252,7 +257,7 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
                 marker = gen_marker()
                 payload = vector_template.replace("__MARKER__", marker)
                 try:
-                    time.sleep(delay)
+                    wait_or_cancel(stop_event, delay)
                     resp = _inject_and_request(session, point, param, payload,
                                                timeout, base_netloc)
                 except Exception:
@@ -282,7 +287,7 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
 def _scan_boolean_based(point: Dict, timeout: int, delay: float,
                         session: requests.Session,
                         vulnerable_params: Set[str],
-                        base_netloc: str) -> List[Dict]:
+                        base_netloc: str, stop_event=None) -> List[Dict]:
     """입력 포인트에 대해 Boolean-based SQLi 탐지를 수행한다.
 
     Dynamic Content Marking 적용:
@@ -305,9 +310,9 @@ def _scan_boolean_based(point: Dict, timeout: int, delay: float,
 
     # Step 1: 원본 요청 2회 → 동적 콘텐츠 context 추출 + 자연 변동폭 측정
     try:
-        time.sleep(delay)
+        wait_or_cancel(stop_event, delay)
         resp1 = _baseline_request(session, point, timeout, base_netloc)
-        time.sleep(delay)
+        wait_or_cancel(stop_event, delay)
         resp2 = _baseline_request(session, point, timeout, base_netloc)
     except Exception:
         return findings
@@ -328,10 +333,10 @@ def _scan_boolean_based(point: Dict, timeout: int, delay: float,
     for param in target_param_names:
         for true_payload, false_payload in BOOLEAN_PAIRS:
             try:
-                time.sleep(delay)
+                wait_or_cancel(stop_event, delay)
                 true_resp = _inject_and_request(session, point, param, true_payload,
                                                 timeout, base_netloc)
-                time.sleep(delay)
+                wait_or_cancel(stop_event, delay)
                 false_resp = _inject_and_request(session, point, param, false_payload,
                                                  timeout, base_netloc)
             except Exception:
@@ -600,7 +605,7 @@ def _inject_and_request(session: requests.Session, point: Dict[str, Any],
 def _scan_inline_query(point: Dict, timeout: int, delay: float,
                        session: requests.Session,
                        vulnerable_params: Set[str],
-                       base_netloc: str) -> List[Dict]:
+                       base_netloc: str, stop_event=None) -> List[Dict]:
     """Inline Query 탐지 — 서브쿼리 결과가 응답 본문에 반사되는지 확인한다.
 
     __MARKER__를 포함한 페이로드를 value 전체에 치환 주입하고(where="replace"),
@@ -621,7 +626,7 @@ def _scan_inline_query(point: Dict, timeout: int, delay: float,
             marker = gen_marker()
             payload = vector.replace("__MARKER__", marker)
             try:
-                time.sleep(delay)
+                wait_or_cancel(stop_event, delay)
                 resp = _inject_and_request(
                     session, point, param, payload,
                     timeout, base_netloc, where="replace",

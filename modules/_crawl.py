@@ -11,6 +11,7 @@ from datetime import datetime
 from html import unescape as _html_unescape
 from urllib.parse import urlparse, urljoin, urldefrag, parse_qs
 from typing import List, Dict, Any, Callable, Optional, Tuple
+from ._cancel import wait_or_cancel
 
 # 로그아웃 경로 패턴 — 세션 파기 방지를 위해 큐 추가 단계에서 제외
 # path의 마지막 segment가 logout/log-out/signout/sign-out과 정확히 일치하는 경우만 매칭
@@ -380,7 +381,7 @@ def _make_route_handler(base_netloc: str,
 def _render_fetch(render_ctx,
                   url: str, timeout: int, delay: float,
                   xhr_points: List[Dict], xhr_visited: set,
-                  base_netloc: str) -> Optional["_RenderedResponse"]:
+                  base_netloc: str, stop_event=None) -> Optional["_RenderedResponse"]:
     """Playwright 컨텍스트로 URL을 렌더링하고 _RenderedResponse를 반환한다.
 
     - 라우트 훅을 통해 C2 강제 + 네트워크 인터셉션 동시 적용.
@@ -391,7 +392,7 @@ def _render_fetch(render_ctx,
     try:
         page = render_ctx.new_page()
         page.route("**/*", _make_route_handler(base_netloc, xhr_points, xhr_visited))
-        time.sleep(delay)
+        wait_or_cancel(stop_event, delay)
         resp = page.goto(url, timeout=timeout * 1000, wait_until="load")
         if resp is None:
             return None
@@ -420,7 +421,8 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
           progress_cb: Optional[Callable[[int, int], None]] = None,
           proxies: Optional[Dict[str, str]] = None,
           auth_headers: Optional[Dict[str, str]] = None,
-          render: bool = False) -> List[Dict[str, Any]]:
+          render: bool = False,
+          stop_event: Optional["threading.Event"] = None) -> List[Dict[str, Any]]:
     """BFS 크롤링으로 같은 도메인 내 페이지를 수집한다.
 
     반환값 페이지 dict 필드:
@@ -503,6 +505,8 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
 
     try:
         while queue and len(visited) < max_pages:
+            # [중단] 검사 — 매 페이지 진입 시 즉시 탈출 (render/static 양 경로 공통)
+            wait_or_cancel(stop_event, 0)
             url, _ = urldefrag(queue.popleft())   # 프래그먼트(#...) 제거
             if url in visited:
                 continue
@@ -525,7 +529,8 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
             resp = None
             if render_ctx:
                 resp = _render_fetch(render_ctx, url, timeout, delay,
-                                     xhr_points, xhr_visited, base_netloc)
+                                     xhr_points, xhr_visited, base_netloc,
+                                     stop_event=stop_event)
 
             # ── 정적 경로 (render=False 또는 렌더 실패 폴백) ─────────────────────
             # C12: 타임아웃·일시적 네트워크 오류에 한해 최대 2회 재시도 (0.5s→1.0s 백오프)
@@ -534,10 +539,10 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
                 for attempt in range(3):
                     try:
                         if attempt > 0:
-                            time.sleep(0.5 * attempt)
+                            wait_or_cancel(stop_event, 0.5 * attempt)
                         # 렌더 경로에서 이미 delay를 소비했으면 첫 시도는 추가 sleep 생략
                         if not (attempt == 0 and render_ctx):
-                            time.sleep(delay)
+                            wait_or_cancel(stop_event, delay)
                         resp = requests.get(url, timeout=timeout, verify=False,
                                             allow_redirects=True, cookies=cookies,
                                             proxies=proxies, headers=auth_headers or {})

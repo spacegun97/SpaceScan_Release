@@ -83,6 +83,10 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
     job["status"] = "running"
     results = []
 
+    # [중단] 즉시 반응용 이벤트 — cancel_scan에서 set, 각 모듈 요청 루프가 검사
+    stop_event = threading.Event()
+    job["stop_event"] = stop_event
+
     # default_pages 스택 사전 탐지 — 자동 탐지 결과 + 사용자 선택 합집합
     stacks_for_default = None
     if "default_pages" in modules:
@@ -112,7 +116,7 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
 
         extra = build_module_extra(key, stacks=stacks_for_default,
                                    max_pages=max_pages, progress_cb=progress_cb,
-                                   render=render)
+                                   render=render, stop_event=stop_event)
         res = run_single_module(mod, label, target, timeout, delay,
                                 cookies, proxies=proxies, auth_headers=auth_headers,
                                 **extra)
@@ -217,13 +221,21 @@ def list_scans():
 
 @app.route("/api/scan/<job_id>/cancel", methods=["POST"])
 def cancel_scan(job_id):
-    """실행 중인 스캔 취소 — cancelled 플래그를 세팅하면 _run_scan 루프가 다음 모듈 전환 시점에 중단"""
+    """실행 중인 스캔 취소.
+
+    - cancelled 플래그: _run_scan 모듈 루프가 다음 모듈로 넘어가지 않도록 함
+    - stop_event.set(): 현재 실행 중인 모듈의 요청 루프가 다음 요청·딜레이 대기에서
+      즉시 ScanCancelled로 탈출 → 진행 중인 1건만 마치고 곧바로 중단
+    """
     job = scan_jobs.get(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
     if job.get("status") not in ("pending", "running"):
         return jsonify({"error": "취소할 수 없는 상태입니다."}), 400
     job["cancelled"] = True
+    stop_event = job.get("stop_event")
+    if stop_event is not None:
+        stop_event.set()
     return jsonify({"ok": True})
 
 
