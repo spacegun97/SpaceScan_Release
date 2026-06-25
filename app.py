@@ -78,18 +78,20 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
               proxies: Optional[dict] = None,
               user_stacks: Optional[list] = None,
               auth_headers: Optional[dict] = None,
-              render: bool = False):
+              render: bool = False,
+              start_idx: int = 0):
     job = scan_jobs[job_id]
     job["status"] = "running"
-    results = []
+    # 재개 시 기존 완료 모듈 결과를 이어받음 (최초 실행은 빈 리스트)
+    results = list(job.get("results", []))
 
     # [중단] 즉시 반응용 이벤트 — cancel_scan에서 set, 각 모듈 요청 루프가 검사
     stop_event = threading.Event()
     job["stop_event"] = stop_event
 
-    # default_pages 스택 사전 탐지 — 자동 탐지 결과 + 사용자 선택 합집합
+    # default_pages 스택 사전 탐지 — 미완료 모듈 범위에 있을 때만 실행
     stacks_for_default = None
-    if "default_pages" in modules:
+    if "default_pages" in modules[start_idx:]:
         dp_mod, _ = MODULE_MAP["default_pages"]
         auto = dp_mod._detect_stacks(target, timeout, cookies, proxies=proxies,
                                      auth_headers=auth_headers)
@@ -101,7 +103,9 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
     per_module = 100 / total_modules if total_modules else 0
 
     for module_idx, key in enumerate(modules):
-        if job.get("cancelled"):
+        if module_idx < start_idx:
+            continue  # 재개 시 이미 완료된 모듈 skip
+        if job.get("cancelled") or job.get("paused"):
             break
         mod, label = MODULE_MAP.get(key, (None, key))
         if not mod:
@@ -120,15 +124,26 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
         res = run_single_module(mod, label, target, timeout, delay,
                                 cookies, proxies=proxies, auth_headers=auth_headers,
                                 **extra)
+        # 중단 신호로 취소된 모듈은 완료로 카운트하지 않음
+        if res.get("cancelled"):
+            break
         results.append(res)
         job["results"] = results
         # 모듈 완료 시 정확한 진행률로 갱신 (하위 콜백의 99% 상한 해제)
         job["progress"] = int((module_idx + 1) / total_modules * 100)
 
-    # 취소된 경우 보고서 생성 없이 cancelled 상태로 종료
+    # 초기화(reset) 취소 시 결과 폐기
     if job.get("cancelled"):
         job["status"] = "cancelled"
         job["completed_at"] = datetime.now().isoformat()
+        return
+
+    # 중단(paused) 시 완료 모듈 결과 보존, 재개 가능 상태로 전환
+    if job.get("paused"):
+        job["status"] = "paused"
+        job["completed_count"] = len(results)
+        job["progress"] = int(len(results) / total_modules * 100) if total_modules else 0
+        job["current_module"] = None
         return
 
     risk = calculate_risk(results)
@@ -183,9 +198,18 @@ def start_scan():
     scan_jobs[job_id] = {
         "job_id": job_id, "target": target, "modules": modules,
         "status": "pending", "progress": 0, "current_module": None,
+        "cancelled": False, "paused": False, "completed_count": 0,
         "results": [], "risk": None,
         "html_report": None,
         "created_at": datetime.now().isoformat(),
+        # 재개용 파라미터 보존 — resume_scan이 동일 인자로 _run_scan 재호출
+        "scan_params": {
+            "target": target, "modules": modules, "timeout": timeout,
+            "delay": delay, "max_pages": max_pages,
+            "cookies": cookies or None, "proxies": proxies,
+            "user_stacks": user_stacks, "auth_headers": auth_headers or None,
+            "render": render,
+        },
     }
     threading.Thread(
         target=_run_scan,
@@ -201,8 +225,8 @@ def scan_status(job_id):
     job = scan_jobs.get(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
-    # 파일 경로는 클라이언트에 노출하지 않고 존재 여부만 전달
-    safe = {k: v for k, v in job.items() if k != "html_report"}
+    # 파일 경로·인증 파라미터·직렬화 불가 객체는 응답에서 제외
+    safe = {k: v for k, v in job.items() if k not in ("html_report", "stop_event", "scan_params")}
     safe["has_html_report"] = bool(job.get("html_report") and os.path.exists(job["html_report"]))
     return jsonify(safe)
 
@@ -221,22 +245,73 @@ def list_scans():
 
 @app.route("/api/scan/<job_id>/cancel", methods=["POST"])
 def cancel_scan(job_id):
-    """실행 중인 스캔 취소.
+    """스캔 중단(paused) 또는 초기화(cancelled) 처리.
 
-    - cancelled 플래그: _run_scan 모듈 루프가 다음 모듈로 넘어가지 않도록 함
-    - stop_event.set(): 현재 실행 중인 모듈의 요청 루프가 다음 요청·딜레이 대기에서
-      즉시 ScanCancelled로 탈출 → 진행 중인 1건만 마치고 곧바로 중단
+    reset=False(중단): paused 플래그 + stop_event.set() → _run_scan이 paused 상태로 전환.
+    reset=True(초기화): cancelled 플래그 + stop_event.set() → 결과 폐기 후 cancelled로 전환.
+    paused 상태에서 reset=True: 스레드가 없으므로 직접 cancelled로 전환.
     """
-    job = scan_jobs.get(job_id)
+    data  = request.json or {}
+    reset = bool(data.get("reset", False))
+    job   = scan_jobs.get(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
-    if job.get("status") not in ("pending", "running"):
+
+    status = job.get("status")
+    # paused 상태에서는 초기화만 허용
+    if status == "paused":
+        if not reset:
+            return jsonify({"error": "이미 일시정지 상태입니다."}), 400
+        job["cancelled"] = True
+        job["paused"]    = False
+        job["status"]    = "cancelled"
+        job["completed_at"] = datetime.now().isoformat()
+        return jsonify({"ok": True})
+
+    if status not in ("pending", "running"):
         return jsonify({"error": "취소할 수 없는 상태입니다."}), 400
-    job["cancelled"] = True
+
+    if reset:
+        # 초기화: cancelled 플래그로 _run_scan이 완전 폐기 경로로 진입
+        job["cancelled"] = True
+        job["paused"]    = False
+    else:
+        # 중단: paused 플래그로 _run_scan이 일시정지 경로로 진입
+        job["paused"] = True
+
     stop_event = job.get("stop_event")
     if stop_event is not None:
         stop_event.set()
     return jsonify({"ok": True})
+
+
+@app.route("/api/scan/<job_id>/resume", methods=["POST"])
+def resume_scan(job_id):
+    """일시정지된 스캔을 완료 모듈 다음부터 재개한다."""
+    job = scan_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    if job.get("status") != "paused":
+        return jsonify({"error": "일시정지 상태가 아닙니다."}), 400
+
+    params    = job.get("scan_params", {})
+    start_idx = job.get("completed_count", 0)
+
+    job["paused"]    = False
+    job["cancelled"] = False
+    job["status"]    = "running"
+
+    threading.Thread(
+        target=_run_scan,
+        args=(job_id,
+              params["target"], params["modules"], params["timeout"],
+              params["delay"],  params["max_pages"], params["cookies"],
+              params["proxies"], params["user_stacks"], params["auth_headers"],
+              params["render"]),
+        kwargs={"start_idx": start_idx},
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "resumed_from": start_idx})
 
 
 @app.route("/api/scan/<job_id>/report/html")

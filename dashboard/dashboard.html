@@ -402,10 +402,12 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
         <!-- Progress -->
         <div class="progress-box" id="prog-box">
           <div class="prog-hd">
-            <div class="prog-lbl">스캔 진행 중...</div>
+            <div class="prog-lbl" id="prog-lbl">스캔 진행 중...</div>
             <div style="display:flex;align-items:center;gap:12px">
               <div class="prog-pct" id="prog-pct">0%</div>
-              <button class="btn-cancel" id="btn-cancel" onclick="cancelScan()">■ 중단</button>
+              <button class="btn-cancel" id="btn-cancel" onclick="cancelScan(false)">■ 중단</button>
+              <button class="btn-cancel" id="btn-reset-scan" onclick="cancelScan(true)">↺ 초기화</button>
+              <button class="btn-scan" id="btn-resume-scan" onclick="resumeScan()" style="display:none;padding:6px 14px;font-size:12px;font-weight:600">▶ 재시작</button>
             </div>
           </div>
           <div class="prog-bg"><div class="prog-fill" id="prog-fill" style="width:0%"></div></div>
@@ -1028,6 +1030,9 @@ function _poll(jobId) {
       } else if (job.status === 'cancelled') {
         clearInterval(pollTimer);
         _resetUI();
+      } else if (job.status === 'paused') {
+        clearInterval(pollTimer);
+        _showPausedUI(job);
       }
     } catch(_) {}
   }, 800);
@@ -1205,15 +1210,57 @@ function toggleF(i) {
   t.textContent = t.textContent === '▼' ? '▲' : '▼';
 }
 
-// ── Cancel scan ──
-async function cancelScan() {
+// ── Cancel scan (중단: reset=false → paused, 초기화: reset=true → cancelled) ──
+async function cancelScan(reset) {
   if (!currentJobId) return;
-  const btn = document.getElementById('btn-cancel');
+  if (reset && !confirm('스캔을 초기화하시겠습니까?\n완료된 모듈 결과가 모두 폐기됩니다.')) return;
+  const btn = reset
+    ? document.getElementById('btn-reset-scan')
+    : document.getElementById('btn-cancel');
   btn.disabled = true;
-  btn.textContent = '중단 중...';
+  btn.textContent = reset ? '초기화 중...' : '중단 중...';
   try {
-    await fetch('/api/scan/' + currentJobId + '/cancel', { method: 'POST' });
-  } catch(_) {}
+    await fetch('/api/scan/' + currentJobId + '/cancel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reset}),
+    });
+    // 초기화는 즉시 UI 복귀 (paused 상태에서 호출 시 포함)
+    if (reset) _resetUI();
+    // 중단은 polling이 paused 감지 후 _showPausedUI 처리
+  } catch(_) {
+    btn.disabled = false;
+    btn.textContent = reset ? '↺ 초기화' : '■ 중단';
+  }
+}
+
+// ── 일시정지 UI 전환 ──
+function _showPausedUI(job) {
+  const completed = (job.results || []).length;
+  const total     = (job.modules || []).length;
+  document.getElementById('prog-lbl').textContent = `${completed}/${total} 모듈 완료 — 일시정지`;
+  document.getElementById('btn-cancel').style.display = 'none';
+  const btnReset = document.getElementById('btn-reset-scan');
+  btnReset.disabled = false;
+  btnReset.textContent = '↺ 초기화';
+  document.getElementById('btn-resume-scan').style.display = '';
+}
+
+// ── Resume scan ──
+async function resumeScan() {
+  if (!currentJobId) return;
+  try {
+    await fetch('/api/scan/' + currentJobId + '/resume', {method: 'POST'});
+    document.getElementById('btn-resume-scan').style.display = 'none';
+    const btnCancel = document.getElementById('btn-cancel');
+    btnCancel.style.display = '';
+    btnCancel.disabled = false;
+    btnCancel.textContent = '■ 중단';
+    document.getElementById('prog-lbl').textContent = '스캔 진행 중...';
+    _poll(currentJobId);
+  } catch(e) {
+    alert('재시작 실패: ' + e.message);
+  }
 }
 
 function _disableDlButtons() {
@@ -1224,10 +1271,16 @@ function _disableDlButtons() {
 
 function _resetUI(resetStatus = true) {
   document.getElementById('btn-scan').disabled = false;
-  // 중단 버튼 초기화
+  // 중단·초기화·재시작 버튼 초기 상태 복귀
   const btnCancel = document.getElementById('btn-cancel');
   btnCancel.disabled = false;
   btnCancel.textContent = '■ 중단';
+  btnCancel.style.display = '';
+  const btnReset = document.getElementById('btn-reset-scan');
+  btnReset.disabled = false;
+  btnReset.textContent = '↺ 초기화';
+  document.getElementById('btn-resume-scan').style.display = 'none';
+  document.getElementById('prog-lbl').textContent = '스캔 진행 중...';
   if (resetStatus) {
     document.getElementById('dot').className = 'dot';
     document.getElementById('status-txt').textContent = '대기 중';

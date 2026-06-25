@@ -108,7 +108,8 @@ REST API 엔드포인트:
   - `render`: JS 렌더링 활성화 boolean (선택, 기본값 `false`). `true`이면 크롤링 모듈이 Playwright Chromium으로 렌더링 + 네트워크 인터셉션을 수행한다. `default_pages`에는 전달되지 않는다.
 - `GET /api/scan/<id>/status` — 진행 상태 폴링 (0~100%). 하위 진행률은 `directory_listing` / `sql_injection` / `default_pages` / `path_traversal` 모듈에서 `progress_cb`를 통해 세밀하게 갱신된다
 - `GET /api/scans` — 히스토리 목록
-- `POST /api/scan/<id>/cancel` — 실행 중인 스캔 취소 (pending/running 상태에서만 가능). `cancelled` 플래그(다음 모듈 진입 차단)와 `job["stop_event"]`(threading.Event) `set()`을 함께 수행한다. stop_event는 각 모듈 요청 루프가 요청 직전·딜레이 대기 중 검사하므로, 진행 중인 1건만 마치고 즉시 중단된다 (모듈 단위가 아닌 요청 단위 반응)
+- `POST /api/scan/<id>/cancel` — 스캔 중단 또는 초기화. body `{reset: bool}` (기본 false). `reset=false`(중단): `paused` 플래그 + `stop_event.set()` → `_run_scan`이 완료 모듈 결과를 보존한 채 `paused` 상태로 전환. `reset=true`(초기화): `cancelled` 플래그 + `stop_event.set()` → 결과 폐기 후 `cancelled`로 전환. `paused` 상태에서 `reset=true`이면 스레드 없이 직접 `cancelled`로 전환. 진행 중인 1건만 마치고 즉시 멈춘다 (요청 단위 반응).
+- `POST /api/scan/<id>/resume` — 일시정지(`paused`) 상태의 스캔을 완료 모듈 다음부터 재개. `job["completed_count"]`를 `start_idx`로 `_run_scan`을 새 스레드로 재시작한다. 응답: `{ok, resumed_from}`.
 - `GET /api/scan/<id>/report/html` — HTML 리포트 다운로드
 - `POST /api/merge` — 다중 엑셀 파일 취합 (multipart/form-data). 요청 필드: `files` (여러 파일), `out_name` (출력 이름). 응답: `{columns, total_rows, per_file, skipped_files, download_name}`
 - `GET /api/merge/download?name=<파일명>` — 취합 결과 xlsx 다운로드. `merge_` 접두사·`.xlsx` 확장자 검증 후 `reports/` 에서 서빙
@@ -119,7 +120,7 @@ REST API 엔드포인트:
 
 `_run_scan()`은 모듈 실행 시 `_runner.build_module_extra()` / `_runner.run_single_module()`을 사용한다. 다만 취소 체크와 진행률 콜백 주입은 대시보드 전용 책임이므로 `_run_scan()` 측에서 처리한다.
 
-**즉시 중단(협조적 중단):** `_run_scan()`은 잡마다 `threading.Event`(`job["stop_event"]`)를 생성하여 `build_module_extra(stop_event=...)`로 4개 스캔 모듈 전체에 전달한다. 각 모듈은 요청 직전·딜레이 대기 지점에서 `modules/_cancel.py`의 `wait_or_cancel(stop_event, secs)`를 호출하며, `cancel_scan()`이 `stop_event.set()`을 호출하면 즉시 `ScanCancelled`(BaseException 상속 — 요청 루프의 `except Exception`을 통과)를 던져 호출부까지 전파한다. `run_single_module()`이 이를 catch하여 `{cancelled: True}` 표식을 반환하고, `_run_scan()`은 `cancelled` 플래그를 보고 보고서 생성 없이 종료한다. 진행 중인 1건(블로킹 requests 호출)만 마치고 곧바로 멈춘다.
+**즉시 중단(협조적 중단) / 재개:** `_run_scan()`은 잡마다 `threading.Event`(`job["stop_event"]`)를 생성하여 `build_module_extra(stop_event=...)`로 4개 스캔 모듈 전체에 전달한다. 각 모듈은 요청 직전·딜레이 대기 지점에서 `modules/_cancel.py`의 `wait_or_cancel(stop_event, secs)`를 호출하며, `cancel_scan()`이 `stop_event.set()`을 호출하면 즉시 `ScanCancelled`(BaseException 상속 — 요청 루프의 `except Exception`을 통과)를 던져 호출부까지 전파한다. `run_single_module()`이 이를 catch하여 `{cancelled: True}` 표식을 반환한다. 중단(`reset=false`)이면 `paused` 플래그가 set되어 `_run_scan()`이 완료 모듈 결과를 보존한 채 `paused` 상태로 전환(`completed_count` 저장)하고, 초기화(`reset=true`)이면 `cancelled` 플래그로 결과 폐기 후 종료한다. `resume_scan()`은 `completed_count`를 `start_idx`로 `_run_scan()`을 새 스레드로 재시작하여 완료 모듈을 skip하고 미완료 모듈부터 이어간다. 진행 중인 1건(블로킹 requests 호출)만 마치고 곧바로 멈춘다.
 
 **하위 진행률 매핑:** `_run_scan()`은 각 모듈 인덱스에 대해 `_make_progress_cb(job, base, span)`로 콜백을 생성하여 `progress_cb`를 지원하는 모듈에 전달한다. 지원 모듈 식별은 `_runner.MODULES_WITH_PROGRESS_CB` 상수로 일원화되어 있다. 하위 모듈이 보고하는 `(current, total)` 값은 `base + current/total * span`으로 전체 진행률에 합산되며, 하위 진행률에는 99% 상한을 걸어 모듈 완료 시점에 정확한 정수 % 값으로 덮어쓴다.
 
@@ -129,16 +130,19 @@ REST API 엔드포인트:
     "job_id":         str,         # scan_YYYYMMDD_HHMMSS_XXXX
     "target":         str,
     "modules":        list[str],
-    "status":         str,         # pending / running / completed / cancelled
-    "progress":       int,         # 0~100
-    "current_module": str | None,
-    "cancelled":      bool,         # 취소 플래그 — 다음 모듈 진입 차단 (cancel_scan에서 set)
-    "stop_event":     "Event",      # threading.Event — 모듈 요청 루프 즉시 탈출 신호 (cancel_scan에서 set())
-    "results":        list,
-    "risk":           dict | None,
-    "html_report":    str | None,  # 절대 경로 (클라이언트 미노출)
-    "created_at":     str,
-    "completed_at":   str | None,
+    "status":          str,          # pending / running / paused / completed / cancelled
+    "progress":        int,          # 0~100
+    "current_module":  str | None,
+    "cancelled":       bool,         # 초기화(reset) 플래그 — _run_scan 폐기 경로 진입
+    "paused":          bool,         # 중단 플래그 — _run_scan 일시정지 경로 진입
+    "completed_count": int,          # 완료된 모듈 수 — resume 시 start_idx로 사용
+    "stop_event":      "Event",      # threading.Event — 요청 루프 즉시 탈출 신호 (클라이언트 미노출)
+    "results":         list,         # 완료된 모듈 결과만 포함 (취소된 모듈은 제외)
+    "risk":            dict | None,
+    "html_report":     str | None,  # 절대 경로 (클라이언트 미노출)
+    "scan_params":     dict,         # 재개용 파라미터 보존 (클라이언트 미노출)
+    "created_at":      str,
+    "completed_at":    str | None,
 }
 ```
 
