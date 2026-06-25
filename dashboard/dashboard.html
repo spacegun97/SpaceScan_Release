@@ -406,7 +406,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             <div style="display:flex;align-items:center;gap:12px">
               <div class="prog-pct" id="prog-pct">0%</div>
               <button class="btn-cancel" id="btn-cancel" onclick="cancelScan(false)">■ 중단</button>
-              <button class="btn-cancel" id="btn-reset-scan" onclick="cancelScan(true)">↺ 초기화</button>
+              <button class="btn-cancel" id="btn-reset-scan" onclick="cancelScan(true)" disabled>↺ 초기화</button>
               <button class="btn-scan" id="btn-resume-scan" onclick="resumeScan()" style="display:none;padding:6px 14px;font-size:12px;font-weight:600">▶ 재시작</button>
             </div>
           </div>
@@ -1256,6 +1256,8 @@ async function resumeScan() {
     btnCancel.style.display = '';
     btnCancel.disabled = false;
     btnCancel.textContent = '■ 중단';
+    // 재시작 시 초기화 버튼 다시 비활성 — 중단 후에만 활성화
+    document.getElementById('btn-reset-scan').disabled = true;
     document.getElementById('prog-lbl').textContent = '스캔 진행 중...';
     _poll(currentJobId);
   } catch(e) {
@@ -1277,7 +1279,8 @@ function _resetUI(resetStatus = true) {
   btnCancel.textContent = '■ 중단';
   btnCancel.style.display = '';
   const btnReset = document.getElementById('btn-reset-scan');
-  btnReset.disabled = false;
+  // 대기/완료 복귀 시 초기화 비활성 — 중단(paused) 상태에서만 활성화되어야 함
+  btnReset.disabled = true;
   btnReset.textContent = '↺ 초기화';
   document.getElementById('btn-resume-scan').style.display = 'none';
   document.getElementById('prog-lbl').textContent = '스캔 진행 중...';
