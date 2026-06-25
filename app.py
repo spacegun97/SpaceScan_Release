@@ -73,7 +73,7 @@ def _make_progress_cb(job: dict, base_pct: float, span: float) -> Callable[[int,
 
 
 def _run_scan(job_id: str, target: str, modules: list, timeout: int,
-              delay: float = 0.7, max_pages: int = 100,
+              delay: float = 0.7, max_pages: int = 1000,
               cookies: Optional[dict] = None,
               proxies: Optional[dict] = None,
               user_stacks: Optional[list] = None,
@@ -154,7 +154,7 @@ def start_scan():
     speed      = int(data.get("speed", 5))
     speed      = max(1, min(6, speed))       # 1~6 범위 보정
     delay      = SPEED_DELAY[speed]
-    max_pages  = int(data.get("max_pages", 100))
+    max_pages  = int(data.get("max_pages", 1000))
     max_pages  = max(10, min(30000, max_pages))  # 10~30000 범위 보정
     render     = bool(data.get("render", False))
     # 쿠키 문자열 파싱: "key=val; key2=val2" → dict (빈 값이면 None)

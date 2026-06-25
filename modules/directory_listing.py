@@ -23,7 +23,7 @@ SENSITIVE_KEYWORDS = {"admin", "backup", "config", "log", "logs", "temp", "tmp",
 
 
 def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
-         max_pages: int = 100, cookies: Optional[Dict[str, str]] = None,
+         max_pages: int = 1000, cookies: Optional[Dict[str, str]] = None,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
          auth_headers: Optional[Dict[str, str]] = None,

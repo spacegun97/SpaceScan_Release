@@ -308,7 +308,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             </div>
             <div class="fg" style="flex:1">
               <label>최대 크롤링 페이지(최대 30000)</label>
-              <input id="inp-max-pages" class="finput" type="number" value="100" min="10" max="30000" />
+              <input id="inp-max-pages" class="finput" type="number" value="1000" min="10" max="30000" />
             </div>
           </div>
 
@@ -975,7 +975,7 @@ async function startScan() {
 
   const timeout   = parseInt(document.getElementById('inp-timeout').value) || 10;
   const speed     = parseInt(document.getElementById('inp-speed').value) || 5;
-  const maxPages  = parseInt(document.getElementById('inp-max-pages').value) || 100;
+  const maxPages  = parseInt(document.getElementById('inp-max-pages').value) || 1000;
   const render    = document.getElementById('inp-render').checked;
   const cookies    = document.getElementById('inp-cookies').value.trim();
   const authHeaders = _parseAuthHeaders(document.getElementById('inp-auth-headers').value);

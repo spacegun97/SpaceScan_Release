@@ -98,7 +98,7 @@ REST API 엔드포인트:
   - `modules`: 실행할 모듈 키 배열
   - `timeout`: 요청 타임아웃 (초)
   - `speed`: 속도 레벨 (1~6)
-  - `max_pages`: 크롤링 최대 페이지 수 (기본값 100, 10~30000 범위로 보정, directory_listing·sql_injection·path_traversal 모듈에 전달)
+  - `max_pages`: 크롤링 최대 페이지 수 (기본값 1000, 10~30000 범위로 보정, directory_listing·sql_injection·path_traversal 모듈에 전달)
   - `cookies`: 쿠키 문자열 (`"key=val; key2=val2"` 형식, 선택값). 서버가 `{키: 값}` 딕셔너리로 파싱하여 모든 모듈의 `scan()`에 전달
   - `auth_headers`: 인증 헤더 dict (`{"Authorization": "Bearer xxx"}` 형식, 선택값). 모든 모듈의 HTTP 요청에 헤더로 첨부. 대시보드에서 `"Header: value"` 형식 텍스트를 `_parseAuthHeaders()`로 파싱하여 전달
   - `proxy_host`: 프록시 호스트 문자열 (선택, 미지정 시 미사용)
@@ -170,12 +170,12 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
 `directory_listing`, `sql_injection`, `path_traversal` 모듈은 추가 파라미터를 받는다:
 ```python
 def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
-         max_pages: int = 100, cookies: dict = None,
+         max_pages: int = 1000, cookies: dict = None,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: dict = None,
          auth_headers: dict = None) -> Dict[str, Any]:
 ```
-- `max_pages`: BFS 크롤링 시 방문할 최대 페이지 수 (기본값 100, 범위 10~30000). 세 모듈이 공용 값을 사용한다.
+- `max_pages`: BFS 크롤링 시 방문할 최대 페이지 수 (기본값 1000, 범위 10~30000). 세 모듈이 공용 값을 사용한다.
 - `progress_cb`: 하위 진행률 보고 콜백. `(current, total)` 형식으로 호출되며 대시보드 진행률 계산에 사용된다.
 
 `default_pages` 모듈은 `stacks` 파라미터와 `progress_cb`를 추가로 받는다:
