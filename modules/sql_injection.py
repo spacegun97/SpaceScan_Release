@@ -120,7 +120,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     # 수집 단계의 netloc 검증이 누락·실수로 뚫리더라도 이 단계에서 외부 URL을 모두 제거한다.
     # 각 수집 단계(form/href/data-*) 검증 + 이 최종 필터 + _request() 사전 검증 = 3중 방어.
     input_points = [pt for pt in input_points
-                    if urlparse(pt["url"]).netloc == base_netloc]
+                    if _crawl._same_site(urlparse(pt["url"]).netloc, base_netloc)]
     debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
                          "sql_injection", f"입력 포인트 수집: {len(input_points)}개"))
 
@@ -147,21 +147,28 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
             # [중단] 검사 — 입력 포인트 진입 시 즉시 탈출
             wait_or_cancel(stop_event, 0)
 
+            # WAF 키워드 baseline 캡처 (원본 페이지에 자연 발생한 키워드는 이후 오탐 판정에서 제외)
+            baseline_kws = _capture_waf_baseline(
+                session, point, timeout, delay, base_netloc, stop_event
+            )
+
             # Error-based 스캔 (Generic → DBMS-specific 2단계)
             error_findings, vulnerable_params = _scan_error_based(
-                point, timeout, delay, session, base_netloc, stop_event
+                point, timeout, delay, session, base_netloc, baseline_kws, stop_event
             )
             all_findings.extend(error_findings)
 
             # Boolean-based 스캔 (Error-based에서 취약 확인된 파라미터는 제외, Dynamic Masking 적용)
             bool_findings = _scan_boolean_based(
-                point, timeout, delay, session, vulnerable_params, base_netloc, stop_event
+                point, timeout, delay, session, vulnerable_params, base_netloc,
+                baseline_kws, stop_event
             )
             all_findings.extend(bool_findings)
 
             # Inline Query 스캔 (반사 기반 탐지 — 이전 기법에서 확인된 파라미터는 제외)
             inline_findings = _scan_inline_query(
-                point, timeout, delay, session, vulnerable_params, base_netloc, stop_event
+                point, timeout, delay, session, vulnerable_params, base_netloc,
+                baseline_kws, stop_event
             )
             all_findings.extend(inline_findings)
 
@@ -180,8 +187,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
 # ── Error-based 스캔 ──────────────────────────────────────────────────────────
 
 def _scan_error_based(point: Dict, timeout: int, delay: float,
-                      session: requests.Session,
-                      base_netloc: str, stop_event=None) -> Tuple[List[Dict], Set[str]]:
+                      session: requests.Session, base_netloc: str,
+                      baseline_kws: List[str], stop_event=None) -> Tuple[List[Dict], Set[str]]:
     """입력 포인트에 대해 Error-based SQLi 탐지를 수행한다.
 
     2단계 구성:
@@ -211,8 +218,8 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
     except Exception:
         return findings, vulnerable_params
 
-    # WAF 차단 감지 시 입력 포인트 전체 스킵
-    if _is_waf_blocked(resp):
+    # WAF 차단 감지 시 입력 포인트 전체 스킵 (baseline에 자연 발생한 키워드는 예외)
+    if _is_waf_blocked(resp, baseline_kws):
         return findings, vulnerable_params
 
     # 첫 번째 페이로드(')의 응답도 시그니처 매칭에 사용 (추가 요청 없음)
@@ -286,8 +293,8 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
 
 def _scan_boolean_based(point: Dict, timeout: int, delay: float,
                         session: requests.Session,
-                        vulnerable_params: Set[str],
-                        base_netloc: str, stop_event=None) -> List[Dict]:
+                        vulnerable_params: Set[str], base_netloc: str,
+                        baseline_kws: List[str], stop_event=None) -> List[Dict]:
     """입력 포인트에 대해 Boolean-based SQLi 탐지를 수행한다.
 
     Dynamic Content Marking 적용:
@@ -342,8 +349,8 @@ def _scan_boolean_based(point: Dict, timeout: int, delay: float,
             except Exception:
                 continue
 
-            # Boolean 응답에서 WAF 차단 감지 시 해당 파라미터 스킵
-            if _is_waf_blocked(true_resp) or _is_waf_blocked(false_resp):
+            # Boolean 응답에서 WAF 차단 감지 시 해당 파라미터 스킵 (baseline 키워드는 예외)
+            if _is_waf_blocked(true_resp, baseline_kws) or _is_waf_blocked(false_resp, baseline_kws):
                 break
 
             # 동일 dynamic_contexts로 공격 응답도 마스킹하여 비교 (baseline과 동일 기준)
@@ -392,7 +399,7 @@ def _request(session: requests.Session, method: str, url: str,
     - "xml":  application/xml — params를 평면 XML 트리로 조립 후 전송
     """
     # 사전 검증 — 외부 도메인으로 payload 전송 차단 (최종 방어선)
-    if base_netloc and urlparse(url).netloc != base_netloc:
+    if base_netloc and not _crawl._same_site(urlparse(url).netloc, base_netloc):
         raise ValueError(f"request to external domain blocked: {urlparse(url).netloc}")
 
     if method == "POST":
@@ -408,19 +415,24 @@ def _request(session: requests.Session, method: str, url: str,
     else:
         resp = session.get(url, params=params, timeout=timeout, allow_redirects=True)
     # 사후 검증 — 리다이렉트로 외부 도메인으로 이탈 시 세션 쿠키 유출 방지
-    if base_netloc and urlparse(resp.url).netloc != base_netloc:
+    if base_netloc and not _crawl._same_site(urlparse(resp.url).netloc, base_netloc):
         raise ValueError(f"redirect to external domain: {urlparse(resp.url).netloc}")
     return resp
 
 
-def _is_waf_blocked(resp: requests.Response) -> bool:
+def _is_waf_blocked(resp: requests.Response,
+                    baseline_kws: Optional[List[str]] = None) -> bool:
     """응답이 WAF 차단 패턴과 일치하는지 확인한다.
 
     403 단독으로는 WAF로 판정하지 않음 — CSRF 검증 실패(403)와 구별하기 위해
     응답 바디에 WAF 차단 키워드가 있는 경우만 WAF로 판정한다.
+    baseline_kws에 포함된 키워드는 원본(페이로드 없음) 응답에도 자연 발생한
+    단어이므로(예: 페이지 자체에 "syntax"·"warning" 등이 포함된 경우) 오탐 방지를
+    위해 판정에서 제외한다.
     """
     body_lower = resp.text.lower()
-    return any(kw in body_lower for kw in WAF_KEYWORDS)
+    baseline_kws = baseline_kws or []
+    return any(kw in body_lower and kw not in baseline_kws for kw in WAF_KEYWORDS)
 
 
 def _match_error_signature(body: str) -> Tuple[Optional[str], Optional[str]]:
@@ -563,6 +575,25 @@ def _baseline_request(session: requests.Session, point: Dict[str, Any],
                     timeout, base_netloc, body_type)
 
 
+def _capture_waf_baseline(session: requests.Session, point: Dict[str, Any],
+                          timeout: int, delay: float, base_netloc: str,
+                          stop_event=None) -> List[str]:
+    """입력 포인트의 원본(페이로드 없음) 응답에서 자연 발생 WAF 키워드를 캡처한다.
+
+    baseline 페이지 자체에 WAF_KEYWORDS 단어가 포함돼 있으면(예: 코딩 튜토리얼
+    페이지의 "syntax error" 등) 이후 모든 페이로드 응답이 오탐으로 WAF 차단
+    판정되어 해당 입력 포인트 전체가 스킵되는 문제를 방지한다.
+    캡처 실패(네트워크 오류 등) 시 빈 리스트 반환 — 기존 동작으로 폴백.
+    """
+    try:
+        wait_or_cancel(stop_event, delay)
+        resp = _baseline_request(session, point, timeout, base_netloc)
+    except Exception:
+        return []
+    body_lower = resp.text.lower()
+    return [kw for kw in WAF_KEYWORDS if kw in body_lower]
+
+
 def _inject_and_request(session: requests.Session, point: Dict[str, Any],
                         param: str, payload: str,
                         timeout: int,
@@ -604,8 +635,8 @@ def _inject_and_request(session: requests.Session, point: Dict[str, Any],
 
 def _scan_inline_query(point: Dict, timeout: int, delay: float,
                        session: requests.Session,
-                       vulnerable_params: Set[str],
-                       base_netloc: str, stop_event=None) -> List[Dict]:
+                       vulnerable_params: Set[str], base_netloc: str,
+                       baseline_kws: List[str], stop_event=None) -> List[Dict]:
     """Inline Query 탐지 — 서브쿼리 결과가 응답 본문에 반사되는지 확인한다.
 
     __MARKER__를 포함한 페이로드를 value 전체에 치환 주입하고(where="replace"),
@@ -634,8 +665,8 @@ def _scan_inline_query(point: Dict, timeout: int, delay: float,
             except Exception:
                 continue
 
-            # WAF 차단 감지 시 해당 파라미터 추가 벡터 스킵
-            if _is_waf_blocked(resp):
+            # WAF 차단 감지 시 해당 파라미터 추가 벡터 스킵 (baseline 키워드는 예외)
+            if _is_waf_blocked(resp, baseline_kws):
                 break
 
             # 응답 본문에 마커가 그대로 반사되었는지 확인

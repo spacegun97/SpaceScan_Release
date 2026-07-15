@@ -1,0 +1,25 @@
+{
+  "paths": [
+    {"path": "/.env.backup",                      "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/telescope",                        "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/telescope/api/requests",           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/horizon",                          "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/horizon/api/stats",                "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/storage/logs/laravel.log",         "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/_ignition/health-check",           "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/_ignition/execute-solution",       "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/_ignition/share-report",           "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/_debugbar/open",                   "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php", "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/nova/",                            "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/log-viewer",                       "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/mix-manifest.json",                "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/composer.json",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/composer.lock",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/artisan",                          "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/config/app.php",                   "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/config/database.php",              "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/api/user",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/sanctum/csrf-cookie",              "severity": "LOW",    "category": "api_endpoint"}
+  ]
+}

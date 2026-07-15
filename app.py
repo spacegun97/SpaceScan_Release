@@ -5,6 +5,8 @@ Space Scan - Flask 대시보드
 """
 import os
 import sys
+import secrets
+import socket
 import threading
 import time
 import argparse
@@ -22,8 +24,9 @@ sys.path.insert(0, BASE_DIR)
 from _core import (normalize_url, calculate_risk, generate_html_report,
                    save_crawl_log, parse_cookie_string, SPEED_DELAY,
                    EXTRACT_SPEED_DELAY, _ensure_extract_deps,
-                   _estimate_dump, _ensure_merge_deps)
-from modules import MODULE_MAP, sqli_extract, excel_merge
+                   _estimate_dump, _ensure_merge_deps, _ensure_recon_deps)
+from modules import MODULE_MAP, sqli_extract, excel_merge, recon
+from modules._cancel import ScanCancelled
 from _runner import build_module_extra, run_single_module, MODULES_WITH_PROGRESS_CB
 
 from flask import Flask, render_template, request, jsonify, send_file
@@ -38,6 +41,9 @@ JOB_TTL_SEC = 3600
 extract_jobs: dict = {}
 # current_action_id check-and-set 보호 — 동시 액션 호출 시 409 Conflict 판정용
 extract_lock = threading.Lock()
+
+# ── 정보수집(OSINT) 모드 ────────────────────────────────────────────────────
+recon_jobs: dict = {}
 
 
 def _build_proxies(proxy_host, proxy_port) -> Optional[dict]:
@@ -77,8 +83,10 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
               cookies: Optional[dict] = None,
               proxies: Optional[dict] = None,
               user_stacks: Optional[list] = None,
+              user_backends: Optional[list] = None,
               auth_headers: Optional[dict] = None,
               render: bool = False,
+              backend_filter: bool = True,
               start_idx: int = 0):
     job = scan_jobs[job_id]
     job["status"] = "running"
@@ -91,6 +99,7 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
 
     # default_pages 스택 사전 탐지 — 미완료 모듈 범위에 있을 때만 실행
     stacks_for_default = None
+    backends_for_default = None
     if "default_pages" in modules[start_idx:]:
         dp_mod, _ = MODULE_MAP["default_pages"]
         auto = dp_mod._detect_stacks(target, timeout, cookies, proxies=proxies,
@@ -98,6 +107,8 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
         # 유효한 스택명만 허용 (TECH_REGISTRY에 없는 값 필터링)
         extra = [s for s in (user_stacks or []) if s in dp_mod.TECH_REGISTRY]
         stacks_for_default = list(set(auto) | set(extra))
+        # 유효한 언어 패밀리만 허용 (BACKEND_FAMILIES에 없는 값 필터링)
+        backends_for_default = [b for b in (user_backends or []) if b in dp_mod.BACKEND_FAMILIES]
 
     total_modules = len(modules)
     per_module = 100 / total_modules if total_modules else 0
@@ -120,7 +131,9 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
 
         extra = build_module_extra(key, stacks=stacks_for_default,
                                    max_pages=max_pages, progress_cb=progress_cb,
-                                   render=render, stop_event=stop_event)
+                                   render=render, stop_event=stop_event,
+                                   backend_filter=backend_filter,
+                                   backends=backends_for_default)
         res = run_single_module(mod, label, target, timeout, delay,
                                 cookies, proxies=proxies, auth_headers=auth_headers,
                                 **extra)
@@ -176,6 +189,7 @@ def start_scan():
     max_pages  = int(data.get("max_pages", 1000))
     max_pages  = max(10, min(30000, max_pages))  # 10~30000 범위 보정
     render     = bool(data.get("render", False))
+    backend_filter = bool(data.get("backend_filter", True))
     # 쿠키 문자열 파싱: "key=val; key2=val2" → dict (빈 값이면 None)
     cookies_str = data.get("cookies", "").strip()
     cookies = parse_cookie_string(cookies_str) if cookies_str else {}
@@ -190,11 +204,16 @@ def start_scan():
     if not isinstance(raw_dp_stacks, list):
         return jsonify({"error": "default_pages_stacks는 배열이어야 합니다."}), 400
     user_stacks = [str(s) for s in raw_dp_stacks]
+    # Default Pages 사용자 선택 백엔드 언어 — 리스트 타입만 허용 (유효성 검사는 _run_scan 내부)
+    raw_dp_backends = data.get("default_pages_backends") or []
+    if not isinstance(raw_dp_backends, list):
+        return jsonify({"error": "default_pages_backends는 배열이어야 합니다."}), 400
+    user_backends = [str(b) for b in raw_dp_backends]
 
     if not target:
         return jsonify({"error": "target URL이 필요합니다."}), 400
 
-    job_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{abs(hash(target)) % 9999:04d}"
+    job_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
     scan_jobs[job_id] = {
         "job_id": job_id, "target": target, "modules": modules,
         "status": "pending", "progress": 0, "current_module": None,
@@ -207,14 +226,16 @@ def start_scan():
             "target": target, "modules": modules, "timeout": timeout,
             "delay": delay, "max_pages": max_pages,
             "cookies": cookies or None, "proxies": proxies,
-            "user_stacks": user_stacks, "auth_headers": auth_headers or None,
-            "render": render,
+            "user_stacks": user_stacks, "user_backends": user_backends,
+            "auth_headers": auth_headers or None,
+            "render": render, "backend_filter": backend_filter,
         },
     }
     threading.Thread(
         target=_run_scan,
         args=(job_id, target, modules, timeout, delay, max_pages,
-              cookies or None, proxies, user_stacks, auth_headers or None, render),
+              cookies or None, proxies, user_stacks, user_backends, auth_headers or None,
+              render, backend_filter),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
@@ -238,7 +259,7 @@ def list_scans():
          "risk": j.get("risk"), "created_at": j.get("created_at"),
          "completed_at": j.get("completed_at"),
          "has_html_report": bool(j.get("html_report") and os.path.exists(j["html_report"]))}
-        for jid, j in scan_jobs.items()
+        for jid, j in list(scan_jobs.items())
     ]
     return jsonify(sorted(out, key=lambda x: x.get("created_at",""), reverse=True))
 
@@ -306,8 +327,8 @@ def resume_scan(job_id):
         args=(job_id,
               params["target"], params["modules"], params["timeout"],
               params["delay"],  params["max_pages"], params["cookies"],
-              params["proxies"], params["user_stacks"], params["auth_headers"],
-              params["render"]),
+              params["proxies"], params["user_stacks"], params["user_backends"],
+              params["auth_headers"], params["render"], params["backend_filter"]),
         kwargs={"start_idx": start_idx},
         daemon=True,
     ).start()
@@ -367,6 +388,51 @@ def _gc_extract_jobs() -> None:
         del extract_jobs[jid]
 
 
+def _gc_recon_jobs() -> None:
+    """완료/취소/에러 후 1시간 경과 recon job을 정리한다 (메모리 누수 방지).
+
+    /api/recon/start 진입부에서 호출된다.
+    """
+    now = time.time()
+    expired = [
+        jid for jid, j in list(recon_jobs.items())
+        if j.get("status") in ("completed", "cancelled", "error")
+        and j.get("completed_at")
+        and (now - _to_ts(j["completed_at"])) > JOB_TTL_SEC
+    ]
+    for jid in expired:
+        del recon_jobs[jid]
+
+
+def _run_recon_job(job_id: str, domain: str, sources: list, timeout: int,
+                   max_subdomains: int) -> None:
+    """정보수집 백그라운드 실행 — run_recon() 실행 후 HTML/Excel 리포트 생성."""
+    job = recon_jobs[job_id]
+    job["status"] = "running"
+
+    def progress_cb(current: int, total: int) -> None:
+        job["progress"] = min(99, current) if total > 0 else job["progress"]
+
+    try:
+        result = recon.run_recon(
+            domain, sources, timeout=timeout, max_subdomains=max_subdomains,
+            progress_cb=progress_cb, stop_event=job["stop_event"],
+        )
+        job["result"] = result
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        job["html_report"] = recon.generate_recon_html(result, REPORTS_DIR)
+        job["excel_report"] = recon.save_recon_to_excel(result, REPORTS_DIR)
+        job["progress"] = 100
+        job["status"] = "completed"
+    except ScanCancelled:
+        job["status"] = "cancelled"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+    finally:
+        job["completed_at"] = datetime.now().isoformat()
+
+
 def _make_extract_progress_cb(job: dict) -> Callable[[int, int], None]:
     """추출 액션 하위 진행률을 job["action_progress"]에 매핑.
 
@@ -401,6 +467,8 @@ def _run_extract_fingerprint(job_id: str) -> None:
             "dbms": ctx.dbms,
             "technique": ctx.technique,
             "context": ctx.quote_context,
+            "position": ctx.position or "where",
+            "blind_template": ctx.blind_template or "",
             "union_visible_idx": ctx.union_visible_idx,
             "unsupported_techniques": [],
         }
@@ -408,6 +476,8 @@ def _run_extract_fingerprint(job_id: str) -> None:
         extracted = job["extracted"]
         extracted["meta"]["dbms"]             = ctx.dbms
         extracted["meta"]["context"]          = ctx.quote_context
+        extracted["meta"]["position"]         = ctx.position or "where"
+        extracted["meta"]["blind_template"]   = ctx.blind_template or ""
         extracted["meta"]["technique"]        = ctx.technique
         extracted["meta"]["union_columns"]    = ctx.union_columns
         extracted["meta"]["union_types"]      = list(ctx.union_types)
@@ -427,6 +497,8 @@ def _run_extract_fingerprint(job_id: str) -> None:
             "dbms": ctx.dbms or "",
             "technique": ctx.technique,
             "context": ctx.quote_context if ctx.quote_context is not None else "",
+            "position": ctx.position or "where",
+            "blind_template": ctx.blind_template or "",
             "union_visible_idx": ctx.union_visible_idx,
             "unsupported_techniques": unsupp,
             "failure_reason": reason,
@@ -469,43 +541,104 @@ def _excel_update_summary(extracted: dict, action_id: str) -> str:
         dump = (extracted.get("dumps") or {}).get(key) or {}
         rows = dump.get("rows") or []
         return f"dump 추출 — {key} ({len(rows)}행)"
+    if action_id.startswith("search:"):
+        hits = ((extracted.get("search") or {}).get("hits")) or []
+        return f"검색 완료 ({len(hits)}건)"
     return action_id
 
 
-def _save_excel_file(job: dict) -> None:
-    """엑셀 파일만 기록 — 로그 없는 조용한 flush 전용.
+def _search_file_prefix(job: dict) -> str:
+    """검색모드 파일명 prefix — search(<대상>-<검색어>) 형태로 일반 추출과 격리."""
+    meta = job.get("search_meta") or {}
+    return f"search({meta.get('target', '')}-{meta.get('keyword', '')})"
 
-    save_excel=False이거나 저장 실패 시 예외를 전파하지 않는다.
+
+def _parse_search_hit(raw: str, target: str) -> dict:
+    """검색 결과 raw 문자열(DUMP_DELIM 결합)을 {db,table,column,display} 구조로 분리한다.
+
+    이름에 "."이 포함돼도 파싱 오류가 나지 않도록 "." 결합이 아닌 원본
+    DUMP_DELIM 기준으로 분리한다.
+    """
+    parts = raw.split(sqli_extract.DUMP_DELIM)
+    if target == "database":
+        return {"db": parts[0], "table": None, "column": None, "display": parts[0]}
+    if target == "table":
+        return {"db": parts[0], "table": parts[1], "column": None,
+                "display": f"{parts[0]}.{parts[1]}"}
+    return {"db": parts[0], "table": parts[1], "column": parts[2],
+            "display": f"{parts[0]}.{parts[1]}.{parts[2]}"}
+
+
+def _save_excel_file(job: dict, mode: str = "extract",
+                     log_label: Optional[str] = None, log_errors: bool = False) -> None:
+    """엑셀 파일 저장 — 기본은 로그 없는 조용한 flush.
+
+    save_excel=False이면 즉시 반환.
+    log_label이 주어지면 저장 성공 시 excel_updates에 진행률 로그를 남긴다
+    (예: "[중간저장] 진행 1234/5678"). log_errors=True이면 실패도 로그로 남긴다
+    (기본은 실패를 무시 — 30초 주기 중간저장 실패로 로그가 도배되는 것을 방지).
+    mode="search"이면 검색모드 결과(search_extracted)를 격리된 파일로 저장한다.
     """
     if not job.get("save_excel"):
         return
     try:
         os.makedirs(REPORTS_DIR, exist_ok=True)
-        saved = sqli_extract.save_to_excel(
-            job["extracted"], job["target"], REPORTS_DIR,
-            excel_name=job.get("excel_name"),
-        )
-        job["excel_files"] = saved
-    except Exception:
-        pass  # flush 실패는 무시 — 추출 흐름 유지
+        if mode == "search":
+            saved = sqli_extract.save_to_excel(
+                job["search_extracted"], job["target"], REPORTS_DIR,
+                excel_name=job.get("excel_name"), file_prefix=_search_file_prefix(job),
+            )
+            job["search_excel_files"] = saved
+        else:
+            saved = sqli_extract.save_to_excel(
+                job["extracted"], job["target"], REPORTS_DIR,
+                excel_name=job.get("excel_name"),
+            )
+            job["excel_files"] = saved
+        if log_label is not None:
+            current, total = job.get("action_current", 0), job.get("action_total", 0)
+            progress = f"진행 {current}/{total}" if total > 0 else f"진행 {current}"
+            summary = f"[{log_label}] {progress}"
+            if mode == "search":
+                summary = f"[검색] {summary}"
+            job["excel_updates"].append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "summary": summary,
+            })
+    except Exception as e:
+        if log_errors:
+            job["excel_updates"].append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "summary": f"엑셀 저장 실패: {e}",
+            })
+        # log_errors=False면 flush 실패를 무시 — 추출 흐름 유지
 
 
-def _save_excel_incremental(job: dict, action_id: str) -> None:
+def _save_excel_incremental(job: dict, action_id: str, mode: str = "extract") -> None:
     """액션 완료 시점에 엑셀을 재저장하고 갱신 내역을 기록한다.
 
     save_excel=False인 job은 즉시 반환. 저장 실패(파일 락 등)는
     오류를 excel_updates에 기록하고 추출 흐름은 유지한다.
+    mode="search"이면 검색모드 결과를 격리된 파일로 저장한다.
     """
     if not job.get("save_excel"):
         return
     try:
         os.makedirs(REPORTS_DIR, exist_ok=True)
-        saved = sqli_extract.save_to_excel(
-            job["extracted"], job["target"], REPORTS_DIR,
-            excel_name=job.get("excel_name"),
-        )
-        job["excel_files"] = saved
-        summary = _excel_update_summary(job["extracted"], action_id)
+        if mode == "search":
+            saved = sqli_extract.save_to_excel(
+                job["search_extracted"], job["target"], REPORTS_DIR,
+                excel_name=job.get("excel_name"), file_prefix=_search_file_prefix(job),
+            )
+            job["search_excel_files"] = saved
+            summary = f"[검색] {_excel_update_summary(job['search_extracted'], action_id)}"
+        else:
+            saved = sqli_extract.save_to_excel(
+                job["extracted"], job["target"], REPORTS_DIR,
+                excel_name=job.get("excel_name"),
+            )
+            job["excel_files"] = saved
+            summary = _excel_update_summary(job["extracted"], action_id)
         job["excel_updates"].append({
             "time": datetime.now().strftime("%H:%M:%S"),
             "summary": summary,
@@ -517,25 +650,39 @@ def _save_excel_incremental(job: dict, action_id: str) -> None:
         })
 
 
-def _cleanup_partial_list(action_id: str, extracted: dict) -> None:
-    """중단된 리스트 액션의 부분 결과를 extracted에서 제거.
+def _ensure_totals(extracted: dict) -> dict:
+    """구버전 엑셀 로드 등으로 totals 키가 없는 extracted를 방어적으로 보정."""
+    totals = extracted.setdefault("totals", {"databases": None, "tables": {}, "columns": {}})
+    totals.setdefault("databases", None)
+    totals.setdefault("tables", {})
+    totals.setdefault("columns", {})
+    return totals
 
-    협조적 break 경로에서 _list_items가 부분 목록을 반환 후 대입되므로
-    캐시 히트 방지를 위해 해당 키를 초기화한다. dump는 이어받기를 유지하므로 건드리지 않는다.
+
+def _is_list_complete(existing: list, total: Optional[int]) -> bool:
+    """total이 확정되어 있고 existing 길이가 이를 충족하면 완료로 간주한다."""
+    return total is not None and len(existing) >= total
+
+
+def _make_flush_cb(job: dict, base_cb: Callable[[int, int], None],
+                   interval: float = 30.0, mode: str = "extract") -> Callable[[int, int], None]:
+    """진행률 콜백에 주기적(interval초) 엑셀 체크포인트 저장을 덧붙인다.
+
+    저장 성공 시 excel_updates에 "[중간저장]" 로그를 남긴다(실패는 무시 —
+    30초마다 반복 실패로 로그가 도배되는 것을 방지).
     """
-    if action_id == "list_dbs":
-        extracted["databases"] = []
-    elif action_id.startswith("list_tables:"):
-        db = action_id[len("list_tables:"):]
-        if extracted.get("tables"):
-            extracted["tables"].pop(db, None)
-    elif action_id.startswith("list_columns:"):
-        col_key = action_id[len("list_columns:"):]
-        if extracted.get("columns"):
-            extracted["columns"].pop(col_key, None)
+    ts = [time.time()]  # 클로저 내 mutable 컨테이너
+
+    def cb(current: int, total: int) -> None:
+        base_cb(current, total)
+        now = time.time()
+        if now - ts[0] >= interval:
+            ts[0] = now
+            _save_excel_file(job, mode=mode, log_label="중간저장")
+    return cb
 
 
-def _finalize_cancelled(job: dict) -> None:
+def _finalize_cancelled(job: dict, mode: str = "extract") -> None:
     """중단 공용 마무리 — 취소 플래그 해제 + ready/cancelled 상태 결정.
 
     협조적 break(정상 반환)와 InterruptedError 두 경로를 통합 처리한다.
@@ -549,17 +696,19 @@ def _finalize_cancelled(job: dict) -> None:
         job["completed_at"] = datetime.now().isoformat()
     else:
         # [중단] 의도 — 부분 데이터 저장 후 ready 복귀 (버튼 재활성화)
-        _save_excel_file(job)
+        # 이후 재저장 없는 최종 저장이므로 실패도 로그로 남긴다(log_errors=True)
+        _save_excel_file(job, mode=mode, log_label="중단", log_errors=True)
         job["cancelled"] = False
         job["status"] = "ready"
 
 
 def _run_extract_action(job_id: str, action_fn: Callable[[dict], None],
-                        action_id: str) -> None:
+                        action_id: str, mode: str = "extract") -> None:
     """액션 래퍼 — current_action_id 좀비 차단 (try/finally로 None 복귀).
 
     action_fn 내부에서 예외가 발생해도 current_action_id가 반드시 비워져
     다음 액션 호출이 가능하도록 보장한다.
+    mode="search"이면 특수 검색모드 결과를 격리된 파일로 저장한다.
     """
     job = extract_jobs[job_id]
     job["status"] = "extracting"
@@ -570,10 +719,12 @@ def _run_extract_action(job_id: str, action_fn: Callable[[dict], None],
         action_fn(job)
         # 협조적 break(cancelled=True 정상 반환)도 중단으로 처리
         if job.get("cancelled"):
-            _cleanup_partial_list(action_id, job.get("extracted") or {})
-            _finalize_cancelled(job)
+            _finalize_cancelled(job, mode=mode)
         else:
-            _save_excel_incremental(job, action_id)
+            # dump_estimate는 COUNT만 수행하고 실제 데이터를 추출하지 않으므로
+            # 엑셀 재저장을 생략한다 (불필요한 I/O + excel_updates 로그 도배 방지)
+            if not action_id.startswith("dump_estimate:"):
+                _save_excel_incremental(job, action_id, mode=mode)
             job["status"] = "ready"
     except sqli_extract.WAFBlockedError as e:
         job["error"] = f"WAF blocked: {e}"
@@ -586,8 +737,7 @@ def _run_extract_action(job_id: str, action_fn: Callable[[dict], None],
         job["completed_at"] = datetime.now().isoformat()
     except InterruptedError:
         # _send 내부에서 취소 신호를 받아 던진 예외 — 동일 마무리 로직 적용
-        _cleanup_partial_list(action_id, job.get("extracted") or {})
-        _finalize_cancelled(job)
+        _finalize_cancelled(job, mode=mode)
     except Exception as e:
         job["error"] = f"{action_id} 실패: {e}"
         job["status"] = "error"
@@ -614,6 +764,36 @@ def extract_check_existing():
     if summary is None:
         return jsonify({"exists": False})
     return jsonify({"exists": True, "summary": summary})
+
+
+@app.route("/api/extract/search-check-existing", methods=["GET"])
+def extract_search_check_existing():
+    """특수 검색모드 기존 엑셀 파일에 이어받을 결과가 있는지 확인.
+
+    ?name=<excel_name>&target=<database|table|column>&match=<contains|exact>&keyword=<검색어>
+    파일이 있고 target/match/keyword가 모두 일치하면
+    {exists:true, total, current_count} 반환. 그 외에는 {exists:false}.
+    """
+    name = (request.args.get("name") or "").strip()
+    target = (request.args.get("target") or "").strip()
+    match = (request.args.get("match") or "").strip()
+    keyword = (request.args.get("keyword") or "").strip()
+    if not name or not target or not match or not keyword:
+        return jsonify({"error": "name/target/match/keyword 파라미터가 필요합니다."}), 400
+
+    search_prefix = f"search({target}-{keyword})"
+    load_result = sqli_extract.load_search_from_excel(name, search_prefix, REPORTS_DIR)
+    if load_result is None:
+        return jsonify({"exists": False})
+    hits_raw, meta = load_result
+    if (meta.get("target") != target or meta.get("match") != match
+            or meta.get("keyword") != keyword):
+        return jsonify({"exists": False})
+    return jsonify({
+        "exists": True,
+        "total": meta.get("total", 0),
+        "current_count": len(hits_raw),
+    })
 
 
 @app.route("/api/extract/start", methods=["POST"])
@@ -703,6 +883,27 @@ def extract_start():
     else:
         quote_context = data.get("context_value") or ""
 
+    # 주입 위치: auto = None(자동 탐지) / manual = where|where_case|orderby|custom
+    _VALID_POSITIONS = {"where", "where_case", "orderby", "custom"}
+    pos_mode = (data.get("position_mode") or "auto").lower()
+    blind_template = None
+    if pos_mode == "auto":
+        position = None
+    else:
+        position = (data.get("position_value") or "where").strip()
+        if position not in _VALID_POSITIONS:
+            return jsonify({"error": "position은 where/where_case/orderby/custom"}), 400
+        if position in ("where_case", "orderby", "custom") and technique != "boolean":
+            return jsonify({"error": "where_case/orderby/custom 위치는 boolean 기법 전용"}), 400
+        if position in ("where_case", "orderby") and preset_dbms == "SQLite":
+            return jsonify({"error": "SQLite는 CASE WHEN 에러 오라클 미지원"}), 400
+        if position == "custom":
+            blind_template = (data.get("blind_template") or "").strip()
+            if not blind_template:
+                return jsonify({"error": "custom 위치는 blind_template이 필요합니다."}), 400
+            if "{cond}" not in blind_template:
+                return jsonify({"error": "blind_template에 {cond} 자리표시자가 없습니다."}), 400
+
     speed = int(data.get("speed", 4))
     speed = max(1, min(6, speed))
     delay = EXTRACT_SPEED_DELAY[speed]
@@ -714,7 +915,8 @@ def extract_start():
     if not isinstance(auth_headers, dict):
         return jsonify({"error": "auth_headers는 dict 형식이어야 합니다."}), 400
 
-    union_hex = bool(data.get("union_hex", True))
+    # HEX 인코딩 모드 — Error/Boolean/UNION 세 기법 공통 (멀티바이트 안전, 기본 ON)
+    use_hex = bool(data.get("use_hex", True))
 
     # UNION 행 묶음 크기 — 1이면 기존 1행씩, N이면 N행 묶음 (UNION 기법 전용)
     try:
@@ -756,9 +958,11 @@ def extract_start():
         technique=technique,
         dbms=preset_dbms,
         quote_context=quote_context,
+        position=position,
+        blind_template=blind_template,
         auth_headers=auth_headers,
         base64_encode=base64_encode,
-        union_hex=union_hex,
+        use_hex=use_hex,
         union_columns=union_columns,
         union_types=list(union_types),
         union_visible_manual=union_visible_manual,
@@ -776,15 +980,17 @@ def extract_start():
         if load_result:
             loaded_extracted, ctx_meta = load_result
             # 자동탐지 대상 필드를 저장된 값으로 덮어씀
-            ctx.dbms          = ctx_meta.get("dbms") or ctx.dbms
-            ctx.quote_context = ctx_meta.get("context", ctx.quote_context)
+            ctx.dbms           = ctx_meta.get("dbms") or ctx.dbms
+            ctx.quote_context  = ctx_meta.get("context", ctx.quote_context)
+            ctx.position       = ctx_meta.get("position") or ctx.position
+            ctx.blind_template = ctx_meta.get("blind_template") or ctx.blind_template
             if ctx.technique == "union":
                 loaded_vis = ctx_meta.get("union_visible_idx", -1)
                 if loaded_vis >= 0:
                     ctx.union_visible_manual = loaded_vis
 
     now = datetime.now()
-    job_id = f"extract_{now.strftime('%Y%m%d_%H%M%S')}_{abs(hash(target)) % 9999:04d}"
+    job_id = f"extract_{now.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
 
     # 초기 extracted: 재사용이면 로드한 데이터, 아니면 새로 초기화
     init_ext = sqli_extract.init_extracted(ctx)
@@ -813,12 +1019,17 @@ def extract_start():
         "action_current": 0,
         "action_total": 0,
         "estimate": None,
+        "estimate_resume_from": None,
         "fingerprint": None,
         "extracted": init_ext,
         "save_excel": save_excel,
         "excel_name": excel_name_val,   # 사용자 입력 이름 (파일명 결정)
         "excel_files": [],
         "excel_updates": [],
+        # 특수 검색모드 — 일반 추출(extracted)과 완전히 격리된 상태/결과/엑셀 파일
+        "search_extracted": None,
+        "search_meta": None,
+        "search_excel_files": [],
         "error": None,
         "created_at": now.isoformat(),
         "completed_at": None,
@@ -851,6 +1062,7 @@ def extract_status(job_id):
         "action_current": job["action_current"],
         "action_total": job["action_total"],
         "estimate": job["estimate"],
+        "estimate_resume_from": job.get("estimate_resume_from"),
         "fingerprint": job["fingerprint"],
         "extracted": job["extracted"],
         "error": job["error"],
@@ -861,15 +1073,25 @@ def extract_status(job_id):
         "excel_name": job.get("excel_name"),
         "excel_files": [os.path.basename(f) for f in (job.get("excel_files") or [])],
         "excel_updates": job.get("excel_updates") or [],
+        # 특수 검색모드 — 일반 extracted와 완전히 격리된 결과/파일
+        "search_extracted": job.get("search_extracted"),
+        "search_meta": job.get("search_meta"),
+        "search_excel_files": [os.path.basename(f) for f in (job.get("search_excel_files") or [])],
     }
     return jsonify(out)
 
 
-def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job: dict):
+def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job: dict,
+                             mode: str = "extract"):
     """액션별 (action_id, fn) 쌍을 반환한다.
 
-    에러·캐시 히트·dump estimate 등 조기 종료 케이스는 Flask Response를 직접 반환.
+    에러·캐시 히트 등 조기 종료 케이스는 Flask Response를 직접 반환.
     호출부에서 isinstance(result, tuple) and isinstance(result[0], str)로 구분.
+    dump의 confirm=false(estimate) 단계도 COUNT 조회가 오래 걸릴 수 있어 다른 액션과
+    동일하게 (action_id, fn) 쌍으로 반환 — 백그라운드 스레드에서 실행되고 결과는
+    job["estimate"]/job["estimate_resume_from"]에 기록되어 상태 폴링으로 노출된다.
+    mode="search"이면 검색모드 전용 search 액션이 추가로 허용되고,
+    체크포인트 flush(_make_flush_cb)가 search_extracted 파일로 격리 저장된다.
     """
     if action == "dbms_info":
         action_id = "dbms_info"
@@ -881,27 +1103,52 @@ def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job:
 
     elif action == "databases":
         action_id = "list_dbs"
-        # 캐시 hit — 이미 추출된 경우 즉시 반환 (current_action_id 점유 안 함)
-        if extracted.get("databases"):
+        totals = _ensure_totals(extracted)
+        existing = extracted.get("databases") or []
+        cached_total = totals.get("databases")
+        # total을 이미 알 때만 동기적으로 캐시 hit 판정 — COUNT 조회 자체는 fn(백그라운드 스레드)에서
+        # 수행해 요청 스레드가 boolean-blind COUNT(15~20 요청) 동안 블로킹되지 않게 한다
+        if cached_total is not None and _is_list_complete(existing, cached_total):
             return jsonify({"ok": True, "cached": True})
 
         def fn(j):
-            cb = _make_extract_progress_cb(j)
-            extracted["databases"] = sqli_extract.list_databases(ctx, progress_cb=cb)
+            # 기존 부분 목록을 그대로 이어받기 — extracted에 미리 등록해 중단 시에도 보존
+            items = extracted.get("databases")
+            if items is None:
+                items = []
+                extracted["databases"] = items
+            total = totals.get("databases")
+            if total is None:
+                total = sqli_extract.count_databases(ctx) or 0
+                totals["databases"] = total
+            base_cb = _make_extract_progress_cb(j)
+            flush_cb = _make_flush_cb(j, base_cb, mode=mode)
+            sqli_extract.list_databases(ctx, total, progress_cb=flush_cb, items_out=items)
 
     elif action == "tables":
         db = (data.get("database") or "").strip()
         if not db:
             return jsonify({"error": "database 필요"}), 400
         action_id = f"list_tables:{db}"
-        if db in (extracted.get("tables") or {}):
+        totals = _ensure_totals(extracted)
+        existing = (extracted.get("tables") or {}).get(db) or []
+        cached_total = totals["tables"].get(db)
+        if cached_total is not None and _is_list_complete(existing, cached_total):
             return jsonify({"ok": True, "cached": True})
 
         def fn(j):
-            cb = _make_extract_progress_cb(j)
-            extracted.setdefault("tables", {})[db] = sqli_extract.list_tables(
-                ctx, db, progress_cb=cb
-            )
+            tables_map = extracted.setdefault("tables", {})
+            items = tables_map.get(db)
+            if items is None:
+                items = []
+                tables_map[db] = items
+            total = totals["tables"].get(db)
+            if total is None:
+                total = sqli_extract.count_db_tables(ctx, db) or 0
+                totals["tables"][db] = total
+            base_cb = _make_extract_progress_cb(j)
+            flush_cb = _make_flush_cb(j, base_cb, mode=mode)
+            sqli_extract.list_tables(ctx, db, total, progress_cb=flush_cb, items_out=items)
 
     elif action == "columns":
         db = (data.get("database") or "").strip()
@@ -910,14 +1157,25 @@ def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job:
             return jsonify({"error": "database/table 필요"}), 400
         col_key = f"{db}.{tbl}"
         action_id = f"list_columns:{col_key}"
-        if col_key in (extracted.get("columns") or {}):
+        totals = _ensure_totals(extracted)
+        existing = (extracted.get("columns") or {}).get(col_key) or []
+        cached_total = totals["columns"].get(col_key)
+        if cached_total is not None and _is_list_complete(existing, cached_total):
             return jsonify({"ok": True, "cached": True})
 
         def fn(j):
-            cb = _make_extract_progress_cb(j)
-            extracted.setdefault("columns", {})[col_key] = sqli_extract.list_columns(
-                ctx, db, tbl, progress_cb=cb
-            )
+            columns_map = extracted.setdefault("columns", {})
+            items = columns_map.get(col_key)
+            if items is None:
+                items = []
+                columns_map[col_key] = items
+            total = totals["columns"].get(col_key)
+            if total is None:
+                total = sqli_extract.count_table_columns(ctx, db, tbl) or 0
+                totals["columns"][col_key] = total
+            base_cb = _make_extract_progress_cb(j)
+            flush_cb = _make_flush_cb(j, base_cb, mode=mode)
+            sqli_extract.list_columns(ctx, db, tbl, total, progress_cb=flush_cb, items_out=items)
 
     elif action == "dump":
         db = (data.get("database") or "").strip()
@@ -927,27 +1185,85 @@ def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job:
             return jsonify({"error": "database/table/columns 필요"}), 400
         confirm = bool(data.get("confirm", False))
         action_id = f"dump:{db}.{tbl}"
+        key = f"{db}.{tbl}"
+        existing = (extracted.get("dumps") or {}).get(key)
 
-        # 1단계: COUNT 추출 후 시간 추정 (current_action_id 점유 안 함)
+        # 검색모드 컬럼 병합: 기존 dump가 있고 요청 컬럼 구성이 다르면 "같은 테이블에
+        # 새 컬럼 추가"로 간주해 이미 뽑은 컬럼은 재추출하지 않고 새 컬럼만 추출한 뒤
+        # 행 인덱스 기준으로 기존 시트에 이어붙인다. 일반 추출 모드는 테이블 전체
+        # 컬럼을 항상 한 번에 dump하므로 이 분기를 타지 않는다.
+        merge_new_cols = None
+        if mode == "search" and existing and existing.get("columns") != list(cols):
+            existing_cols = existing.get("columns") or []
+            merge_new_cols = [c for c in cols if c not in existing_cols]
+            if not merge_new_cols:
+                # 요청 컬럼이 이미 전부 존재 — 추가 추출 불필요
+                return jsonify({"ok": True, "cached": True})
+
+        pending_map = extracted.setdefault("_pending_merges", {}) if merge_new_cols else None
+        pending_key = f"{key}::{','.join(merge_new_cols)}" if merge_new_cols else None
+
+        # 1단계: COUNT 추출 후 시간 추정 — Boolean-blind COUNT는 15~20+ 요청이 걸릴 수
+        # 있어 Flask 요청 스레드를 블로킹하지 않도록 다른 액션과 동일하게 백그라운드
+        # 스레드에서 실행하고, 프론트엔드는 상태 폴링으로 결과(estimate)를 받는다.
         if not confirm:
-            total = sqli_extract.count_table(ctx, db, tbl) or 0
-            job["estimate_total"] = total
-            # 이어받기: 같은 컬럼 구성의 부분 데이터가 있으면 남은 행 기준으로 추정
-            _key = f"{db}.{tbl}"
-            _existing = (extracted.get("dumps") or {}).get(_key)
-            resume_from = (len(_existing["rows"])
-                           if _existing and _existing.get("columns") == list(cols) else 0)
-            remaining = max(total - resume_from, 0)
-            est = _estimate_dump(ctx, remaining)
-            job["estimate"] = est
-            return jsonify({"ok": True, "estimate": est, "resume_from": resume_from})
+            action_id = f"dump_estimate:{key}"
+
+            def fn(j):
+                total = sqli_extract.count_table(ctx, db, tbl) or 0
+                # 테이블별로 키잉 — 다른 테이블 estimate 조회 중 확정 요청이 들어와도
+                # 엉뚱한 total이 재사용되지 않도록 방지
+                j.setdefault("estimate_totals", {})[key] = total
+                if merge_new_cols is not None:
+                    # 병합 이어받기: 중단된 새 컬럼 추출 진행분이 있으면 그 길이만큼
+                    pending = pending_map.get(pending_key)
+                    resume_from = len(pending["rows"]) if pending else 0
+                else:
+                    # 이어받기: 같은 컬럼 구성의 부분 데이터가 있으면 남은 행 기준으로 추정
+                    resume_from = (len(existing["rows"])
+                                   if existing and existing.get("columns") == list(cols) else 0)
+                remaining = max(total - resume_from, 0)
+                j["estimate"] = _estimate_dump(ctx, remaining)
+                j["estimate_resume_from"] = resume_from
+
+            return action_id, fn
 
         # 2단계: 사용자 확인 후 본격 실행 (estimate에서 받은 total 재사용)
-        cached_total = job.get("estimate_total")
+        # 현재 dump 대상(key)과 일치하는 값만 재사용 — 불일치 시 None → 재계산 유도
+        cached_total = (job.get("estimate_totals") or {}).get(key)
 
         def fn(j):
-            key = f"{db}.{tbl}"
-            existing = (extracted.get("dumps") or {}).get(key)
+            base_cb = _make_extract_progress_cb(j)
+            flush_cb = _make_flush_cb(j, base_cb, mode=mode)
+
+            if merge_new_cols is not None:
+                # 새 컬럼만 별도로 추출 — pending_map에 진행 상태를 보관해 중단 시
+                # 이어받기 가능. 완료 전까지는 메인 dumps에 반영하지 않으므로(=엑셀
+                # 미노출) 중단돼도 기존 시트는 그대로 유지된다.
+                pending = pending_map.get(pending_key)
+                rows_acc = pending["rows"] if pending else []
+                if pending is None:
+                    pending_map[pending_key] = {"rows": rows_acc}
+
+                sqli_extract.dump_table(ctx, db, tbl, merge_new_cols,
+                                        total=cached_total,
+                                        progress_cb=flush_cb,
+                                        rows_out=rows_acc)
+                if ctx.cancelled:
+                    # 협조적 중단(예외 없이 반환) — 아직 미완료이므로 병합하지
+                    # 않고 pending 상태 그대로 유지해 다음 시도 때 이어서 추출한다.
+                    return
+                # 여기 도달했다면 취소 없이 끝까지 완료된 것 — 인덱스 기준으로 기존
+                # 행에 새 컬럼 값을 이어붙이고 컬럼 목록을 갱신한 뒤 pending을 정리한다.
+                target = extracted["dumps"][key]
+                target_rows = target["rows"]
+                n_ready = min(len(rows_acc), len(target_rows))
+                for i in range(n_ready):
+                    target_rows[i] = target_rows[i] + rows_acc[i]
+                target["columns"] = target["columns"] + merge_new_cols
+                del pending_map[pending_key]
+                return
+
             # 같은 컬럼 구성의 부분 데이터가 있으면 기존 rows 재사용하여 이어받기
             if existing and existing.get("columns") == list(cols):
                 rows_acc = existing["rows"]
@@ -958,22 +1274,88 @@ def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job:
                     "columns": list(cols), "rows": rows_acc
                 }
 
-            base_cb = _make_extract_progress_cb(j)
-            _flush_ts = [time.time()]  # 클로저 내 mutable 컨테이너
-
-            def flush_cb(current: int, total: int) -> None:
-                base_cb(current, total)
-                # 30초마다 조용한 체크포인트 저장 (로그 없음)
-                now = time.time()
-                if now - _flush_ts[0] >= 30:
-                    _flush_ts[0] = now
-                    _save_excel_file(j)
-
             sqli_extract.dump_table(ctx, db, tbl, list(cols),
                                     total=cached_total,
                                     progress_cb=flush_cb,
                                     rows_out=rows_acc)
             # rows_acc는 extracted["dumps"][key]["rows"]와 동일 객체 — 별도 대입 불필요
+
+    elif action == "search":
+        target = (data.get("search_target") or "").strip()
+        match = (data.get("search_match") or "").strip()
+        keyword = (data.get("search_keyword") or "").strip()
+        if target not in ("database", "table", "column"):
+            return jsonify({"error": "search_target은 database/table/column 중 하나여야 합니다"}), 400
+        if match not in ("contains", "exact"):
+            return jsonify({"error": "search_match는 contains/exact 중 하나여야 합니다"}), 400
+        if not keyword:
+            return jsonify({"error": "search_keyword 필요"}), 400
+        action_id = f"search:{target}:{match}:{keyword}"
+        # resume_search=True이면 기존 엑셀 파일에서 hits_raw + total 복원 후 이어서 실행
+        resume_search = bool(data.get("resume_search", False))
+
+        def fn(j):
+            # ── resume 시도 ──────────────────────────────────────────────────
+            # save_excel=True + mode="search" + 파일 존재 + 조건 일치 시 이전 결과 복원
+            hits_raw: list = []
+            loaded_total = None
+            if (resume_search and mode == "search"
+                    and j.get("save_excel") and j.get("excel_name")):
+                search_prefix = f"search({target}-{keyword})"
+                load_result = sqli_extract.load_search_from_excel(
+                    j["excel_name"], search_prefix, REPORTS_DIR)
+                if load_result is not None:
+                    loaded_hits_raw, loaded_meta = load_result
+                    # target/match/keyword 모두 일치해야 이어받기 유효
+                    if (loaded_meta.get("target") == target
+                            and loaded_meta.get("match") == match
+                            and loaded_meta.get("keyword") == keyword):
+                        hits_raw = loaded_hits_raw
+                        loaded_total = loaded_meta.get("total")
+
+            # ── search_extracted 초기화 + 복원 hits 반영 ────────────────────
+            search_extracted = sqli_extract.init_extracted(ctx)
+            hits: list = []
+            # 복원된 hits_raw → hits 재구성 (새 스캔 시 빈 리스트라 무해)
+            for raw in hits_raw:
+                hits.append(_parse_search_hit(raw, target))
+            # 이미 파싱된 개수부터 stream_cb가 이어서 파싱하도록 초기화
+            parsed_n = [len(hits_raw)]
+
+            search_extracted["search"] = {
+                "target": target, "match": match, "keyword": keyword, "hits": hits,
+            }
+            j["search_extracted"] = search_extracted
+            j["search_meta"] = {"target": target, "match": match, "keyword": keyword}
+            base_cb = _make_extract_progress_cb(j)
+
+            # 히트 raw 문자열은 items_out으로 직접 채워지므로, progress_cb에서 새로
+            # 늘어난 만큼만 파싱해 hits에 append — 추출 로그가 히트를 실시간으로 반영한다
+            def stream_cb(current: int, total_n: int) -> None:
+                base_cb(current, total_n)
+                while parsed_n[0] < len(hits_raw):
+                    hits.append(_parse_search_hit(hits_raw[parsed_n[0]], target))
+                    parsed_n[0] += 1
+
+            # stream_cb를 flush_cb로 감싸 30초 주기 중간저장 추가
+            flush_cb = _make_flush_cb(j, stream_cb, mode=mode)
+            # COUNT: (A)일반 경로는 loaded_total 재사용(요청 생략), (B)MSSQL table/column은
+            # _search_mssql_multidb가 per_db_counts를 항상 fresh 재계산하므로 여기서의
+            # total 값을 무시함 — 두 경우 모두 여기서 count_search를 생략해도 안전
+            if loaded_total is not None:
+                total = loaded_total
+            else:
+                total = sqli_extract.count_search(ctx, target, match, keyword) or 0
+            # total을 search_extracted에 저장 — 엑셀 체크포인트·다음 resume COUNT 생략용
+            search_extracted["search"]["total"] = total
+
+            sqli_extract.search(ctx, target, match, keyword, total,
+                                items_out=hits_raw, progress_cb=flush_cb)
+            # 마지막 progress_cb 호출 이후 남은 항목(있다면) 반영
+            while parsed_n[0] < len(hits_raw):
+                hits.append(_parse_search_hit(hits_raw[parsed_n[0]], target))
+                parsed_n[0] += 1
+
     else:
         return jsonify({"error": f"알 수 없는 action: {action}"}), 400
 
@@ -984,8 +1366,11 @@ def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job:
 def extract_action(job_id):
     """액션 트리거 — 백그라운드 실행 + 동시 호출 시 409 Conflict.
 
-    action ∈ {dbms_info | databases | tables | columns | dump}
-    dump는 confirm 미설정 시 estimate만 채우고 즉시 응답 (current_action_id 점유 안 함).
+    action ∈ {dbms_info | databases | tables | columns | dump | search}
+    dump는 confirm 미설정 시 COUNT 추정(estimate)만 백그라운드로 수행 — 다른 액션과
+    동일하게 current_action_id를 점유하며, 완료 후 job["estimate"]로 결과 확인.
+    search_mode=true이면 tables/columns/dump가 search_extracted를 대상으로 동작
+    (특수 검색모드 드릴다운 — 일반 extracted와 완전히 격리).
     """
     job = extract_jobs.get(job_id)
     if not job:
@@ -995,11 +1380,20 @@ def extract_action(job_id):
 
     data = request.json or {}
     action = (data.get("action") or "").lower()
+    search_mode = bool(data.get("search_mode"))
     ctx = job["ctx"]
-    extracted = job["extracted"]
+
+    if search_mode:
+        if action != "search" and job.get("search_extracted") is None:
+            return jsonify({"error": "먼저 검색(search)을 실행해야 드릴다운이 가능합니다"}), 400
+        extracted = job["search_extracted"] if job.get("search_extracted") is not None else {}
+        mode = "search"
+    else:
+        extracted = job["extracted"]
+        mode = "extract"
 
     # 액션별 action_id + 실행 함수 결정 (에러·캐시·estimate는 즉시 응답)
-    dispatch = _dispatch_extract_action(action, data, ctx, extracted, job)
+    dispatch = _dispatch_extract_action(action, data, ctx, extracted, job, mode=mode)
     if not (isinstance(dispatch, tuple) and isinstance(dispatch[0], str)):
         return dispatch
     action_id, fn = dispatch
@@ -1013,7 +1407,7 @@ def extract_action(job_id):
         job["current_action_id"] = action_id
 
     threading.Thread(
-        target=_run_extract_action, args=(job_id, fn, action_id), daemon=True
+        target=_run_extract_action, args=(job_id, fn, action_id), kwargs={"mode": mode}, daemon=True
     ).start()
     return jsonify({"ok": True})
 
@@ -1037,41 +1431,66 @@ def extract_retechnique(job_id):
     data = request.json or {}
     technique = (data.get("technique") or "").lower()
     dbms = (data.get("dbms") or "").strip()
+    position = (data.get("position") or "").strip()
 
     # technique 또는 dbms 중 하나는 있어야 함
-    if not technique and not dbms:
-        return jsonify({"error": "technique 또는 dbms 필요"}), 400
+    if not technique and not dbms and not position:
+        return jsonify({"error": "technique / dbms / position 중 하나 필요"}), 400
     if technique and technique not in ("error", "boolean", "union"):
         return jsonify({"error": "technique은 error/boolean/union"}), 400
+    if position and position not in ("where", "where_case", "orderby", "custom"):
+        return jsonify({"error": "position은 where/where_case/orderby/custom"}), 400
 
     _VALID_DBMS = {"MySQL", "MariaDB", "MSSQL", "PostgreSQL", "Oracle", "SQLite"}
     if dbms and dbms not in _VALID_DBMS:
         return jsonify({"error": f"지원 DBMS: {', '.join(sorted(_VALID_DBMS))}"}), 400
 
+    # custom 위치: blind_template 파싱 및 검증
+    blind_template = None
+    if position == "custom":
+        blind_template = (data.get("blind_template") or "").strip()
+        if not blind_template:
+            return jsonify({"error": "custom 위치는 blind_template이 필요합니다."}), 400
+        if "{cond}" not in blind_template:
+            return jsonify({"error": "blind_template에 {cond} 자리표시자가 없습니다."}), 400
+
     ctx = job["ctx"]
     effective_technique = technique or ctx.technique
-    # SQLite + Error 충돌 가드
-    if dbms == "SQLite" and effective_technique == "error":
+    effective_dbms      = dbms or ctx.dbms
+    # SQLite 충돌 가드
+    if effective_dbms == "SQLite" and effective_technique == "error":
         return jsonify({"error": "SQLite는 Error-based 미지원 — 기법을 boolean 또는 union으로 변경하세요."}), 400
+    effective_pos = position or ctx.position or "where"
+    if effective_pos in ("where_case", "orderby", "custom") and effective_technique != "boolean":
+        return jsonify({"error": "where_case/orderby/custom 위치는 boolean 기법 전용"}), 400
+    if effective_pos in ("where_case", "orderby") and effective_dbms == "SQLite":
+        return jsonify({"error": "SQLite는 CASE WHEN 에러 오라클 미지원"}), 400
 
     if dbms:
         ctx.dbms = dbms
     if technique:
         ctx.technique = technique
-        if technique == "union":
-            try:
-                uc = int(data.get("union_columns") or 0)
-            except (ValueError, TypeError):
-                return jsonify({"error": "union_columns는 정수"}), 400
-            ut = data.get("union_types") or []
-            # 단일 타입 입력 시 컬럼 수만큼 자동 확장
-            if len(ut) == 1 and uc > 1:
-                ut = ut * uc
-            if uc <= 0 or len(ut) != uc:
-                return jsonify({"error": "UNION 컬럼 수와 타입 개수가 일치해야 합니다."}), 400
-            ctx.union_columns = uc
-            ctx.union_types = list(ut)
-            ctx.union_visible_idx = -1  # 재탐지 트리거
+    if position:
+        ctx.position = position
+        if blind_template:
+            ctx.blind_template = blind_template
+    # UNION 컬럼 재검증 — position 지정 여부와 무관하게 technique이 union으로
+    # 바뀌는 모든 요청에서 실행되어야 함 (position은 boolean 전용 필드라
+    # union 전환 시 함께 오지 않는 경우가 정상 케이스)
+    if technique == "union":
+        try:
+            uc = int(data.get("union_columns") or 0)
+        except (ValueError, TypeError):
+            return jsonify({"error": "union_columns는 정수"}), 400
+        ut = data.get("union_types") or []
+        # 단일 타입 입력 시 컬럼 수만큼 자동 확장
+        if len(ut) == 1 and uc > 1:
+            ut = ut * uc
+        if uc <= 0 or len(ut) != uc:
+            return jsonify({"error": "UNION 컬럼 수와 타입 개수가 일치해야 합니다."}), 400
+        ctx.union_columns = uc
+        ctx.union_types = list(ut)
+        ctx.union_visible_idx = -1  # 재탐지 트리거
     # fingerprint 재실행 전 이전 에러 메시지 초기화
     job["error"] = None
 
@@ -1183,6 +1602,120 @@ def download_merge():
     )
 
 
+# ── 정보수집(OSINT) 모드 ────────────────────────────────────────────────────
+
+@app.route("/api/recon/start", methods=["POST"])
+def recon_start():
+    """정보수집(OSINT) job 생성 + 백그라운드 실행.
+
+    대상 도메인·서브도메인으로는 어떤 요청도 보내지 않는다 — crt.sh / Wayback
+    Machine / 공용 DNS 리졸버(8.8.8.8, 1.1.1.1) / Shodan InternetDB 4개
+    제3자 소스만 조회하는 순수 패시브 정찰이다.
+    """
+    _ensure_recon_deps()
+    _gc_recon_jobs()
+    data = request.json or {}
+
+    try:
+        domain = recon.normalize_domain(data.get("domain", ""))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    sources = data.get("sources") or list(recon.SOURCE_KEYS)
+    if not isinstance(sources, list):
+        return jsonify({"error": "sources는 배열이어야 합니다."}), 400
+    sources = [s for s in sources if s in recon.SOURCE_KEYS]
+    if not sources:
+        return jsonify({"error": "최소 하나 이상의 소스를 선택해야 합니다."}), 400
+
+    timeout = max(3, min(30, int(data.get("timeout", 8))))
+    max_subdomains = max(recon.MIN_MAX_SUBDOMAINS,
+                         min(recon.MAX_MAX_SUBDOMAINS,
+                             int(data.get("max_subdomains", recon.DEFAULT_MAX_SUBDOMAINS))))
+
+    job_id = f"recon_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+    recon_jobs[job_id] = {
+        "job_id": job_id, "domain": domain, "sources": sources,
+        "status": "pending", "progress": 0,
+        "stop_event": threading.Event(),
+        "result": None, "html_report": None, "excel_report": None,
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+    }
+    threading.Thread(
+        target=_run_recon_job,
+        args=(job_id, domain, sources, timeout, max_subdomains),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/api/recon/<job_id>/status")
+def recon_status(job_id):
+    job = recon_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    # 파일 경로·직렬화 불가 객체(stop_event)는 응답에서 제외
+    safe = {k: v for k, v in job.items() if k not in ("stop_event", "html_report", "excel_report")}
+    safe["has_html_report"] = bool(job.get("html_report") and os.path.exists(job["html_report"]))
+    safe["has_excel_report"] = bool(job.get("excel_report") and os.path.exists(job["excel_report"]))
+    return jsonify(safe)
+
+
+@app.route("/api/recon/<job_id>/cancel", methods=["POST"])
+def recon_cancel(job_id):
+    job = recon_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    if job["status"] in ("completed", "cancelled", "error"):
+        return jsonify({"error": "이미 종료된 job"}), 400
+    job["stop_event"].set()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/recon/<job_id>/report/html")
+def recon_report_html(job_id):
+    """정보수집 HTML 리포트 다운로드 - send_file로 절대경로 직접 전송."""
+    job = recon_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    path = job.get("html_report")
+    if not path or not os.path.exists(path):
+        return jsonify({"error": "리포트가 아직 생성되지 않았습니다."}), 404
+    return send_file(path, mimetype="text/html")
+
+
+@app.route("/api/recon/<job_id>/report/excel")
+def recon_report_excel(job_id):
+    """정보수집 Excel 리포트 다운로드."""
+    job = recon_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    path = job.get("excel_report")
+    if not path or not os.path.exists(path):
+        return jsonify({"error": "리포트가 아직 생성되지 않았습니다."}), 404
+    return send_file(
+        path,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=os.path.basename(path),
+    )
+
+
+def _find_free_port(host, start_port, max_tries=20):
+    """start_port부터 순차적으로 bind 가능한(비어 있는) 포트를 탐색해 반환한다.
+    max_tries 범위에서 빈 포트를 못 찾으면 None을 반환한다."""
+    for port in range(start_port, min(start_port + max_tries, 65536)):
+        # SO_REUSEADDR를 설정하지 않은 순수 소켓으로 bind를 시도해 실제 점유 여부를 확인
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind((host, port))
+                return port          # bind 성공 = 비어 있는 포트
+            except OSError:
+                continue             # 이미 사용 중 → 다음 포트로
+    return None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Space Scan Dashboard")
     parser.add_argument("--host",  default="127.0.0.1")
@@ -1191,10 +1724,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     os.makedirs(REPORTS_DIR, exist_ok=True)
+
+    # 요청 포트가 점유돼 있으면 순차적으로 빈 포트를 탐색
+    chosen_port = _find_free_port(args.host, args.port)
+    if chosen_port is None:
+        print(f"\n  [!] {args.port}~{args.port + 19} 범위에서 사용 가능한 포트를 찾지 못했습니다.")
+        print(f"  [!] --port 옵션으로 다른 포트를 지정해 주세요.\n")
+        sys.exit(1)
+    if chosen_port != args.port:
+        print(f"\n  [!] 포트 {args.port}(이)가 사용 중이라 {chosen_port} 포트로 대체합니다.")
+
     print("\n  [*] Space Scan Dashboard")
-    print(f"  [*] http://localhost:{args.port}\n")
+    print(f"  [*] http://localhost:{chosen_port}\n")
     # 서버가 뜬 뒤 브라우저를 자동으로 열기 위해 1초 딜레이 적용
-    t = threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{args.port}"))
+    t = threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{chosen_port}"))
     t.daemon = True
     t.start()
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    app.run(host=args.host, port=chosen_port, debug=args.debug)

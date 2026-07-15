@@ -19,6 +19,8 @@
     {"path": "/health/",                       "severity": "MEDIUM", "category": "status_page"},
     {"path": "/openapi/ui/",                   "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/snoop",                         "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/servlet/snoop",                 "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/servlet/SnoopServlet",          "severity": "LOW",    "category": "debug_endpoint"},
     {"path": "/HelloHTML.jsp",                 "severity": "LOW",    "category": "sample_app"},
     {"path": "/hitcount",                      "severity": "LOW",    "category": "sample_app"},
     {"path": "/HitCount/",                     "severity": "LOW",    "category": "sample_app"},

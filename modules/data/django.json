@@ -1,0 +1,25 @@
+{
+  "paths": [
+    {"path": "/admin/",                           "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/login/",                     "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/__debug__/",                       "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/__debug__/sql/",                   "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/__debug__/api/sql/",               "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/api/",                             "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/api-auth/",                        "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/api-auth/login/",                  "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/graphql",                          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/swagger/",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/redoc/",                           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/flower/",                          "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/silk/",                            "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/db.sqlite3",                       "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/manage.py",                        "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/settings.py",                      "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wsgi.py",                          "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/requirements.txt",                 "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/static/admin/",                    "severity": "LOW",    "category": "default_resource"},
+    {"path": "/static/rest_framework/",           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/media/",                           "severity": "MEDIUM", "category": "sensitive_file"}
+  ]
+}

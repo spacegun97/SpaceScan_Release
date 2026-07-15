@@ -1,0 +1,31 @@
+{
+  "paths": [
+    {"path": "/package.json",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/package-lock.json",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.env.local",                       "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.env.development",                 "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.env.production",                  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/node_modules/",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/npm-debug.log",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/yarn-error.log",                   "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.npmrc",                           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.yarnrc",                          "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/debug",                            "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/status",                           "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/health",                           "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/metrics",                          "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/graphql",                          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/graphiql",                         "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/api-docs",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/swagger",                          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/config.json",                      "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/docker-compose.yml",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/Dockerfile",                       "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/ecosystem.config.js",              "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/server.js",                        "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/app.js",                           "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/index.js",                         "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/webpack.config.js",                "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/yarn.lock",                        "severity": "LOW",    "category": "sensitive_file"}
+  ]
+}

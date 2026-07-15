@@ -182,6 +182,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
 .ext-list-item:hover { background:var(--surf3); color:var(--text); }
 .ext-list-item.selected { background:var(--glow); color:var(--accent); border-left:2px solid var(--accent); padding-left:12px; }
 #ext-wizard.ext-busy .ext-list-item { pointer-events:none; opacity:.5; }
+#ext-search-panel.ext-busy .ext-list-item { pointer-events:none; opacity:.5; }
 .ext-list-empty { padding:24px; text-align:center; color:var(--dim); font-size:12px; }
 
 /* 모달 */
@@ -260,10 +261,13 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
       <h2>Dashboard</h2>
     </div>
     <nav class="sidebar-nav">
-      <div class="nav-lbl">메뉴</div>
+      <div class="nav-lbl">SCAN</div>
+      <div class="nav-item" onclick="showPage('recon')"><span>🛰️</span> 정보수집 (OSINT)</div>
       <div class="nav-item active" onclick="showPage('scan')"><span>⚡</span> 스캔 실행</div>
       <div class="nav-item" onclick="showPage('history')"><span>📋</span> 스캔 히스토리</div>
+      <div class="nav-lbl">EXPLOIT</div>
       <div class="nav-item" onclick="showPage('extract')"><span>💉</span> 데이터 추출 (SQLi)</div>
+      <div class="nav-lbl">UTILITY</div>
       <div class="nav-item" onclick="showPage('merge')"><span>📂</span> 엑셀 취합</div>
     </nav>
     <div class="sidebar-foot">v1.0 · Authorized use only</div>
@@ -370,7 +374,27 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
               Default Pages — 추가 점검 스택
               <span style="color:var(--dim);font-weight:400;font-size:11px">(선택사항 · 자동 탐지 결과와 합쳐서 점검 · 미선택 시 탐지된 스택만 점검)</span>
             </label>
-            <div class="dp-stack-body">
+            <div style="display:flex;align-items:center;gap:10px;margin:6px 0 10px">
+              <label class="mtoggle on" style="display:inline-flex;flex-shrink:0">
+                <input type="checkbox" id="inp-backend-filter" checked>
+                <div class="chk"></div>
+                <span class="mlabel">백엔드 확장자 필터 (기본 ON — 감지된 스택과 다른 언어의 실행 확장자(.jsp/.php/.aspx 등)는 건너뜀)</span>
+              </label>
+            </div>
+            <div id="dp-backend-lang-section">
+              <div style="margin-bottom:6px">
+                <span style="color:var(--dim);font-size:11px">백엔드 언어 직접 지정 — 자동 탐지 언어와 합쳐서 필터 적용 (Apache/Nginx/에디터류만 감지된 경우 등 언어 미확정 시 필터를 강제 활성화 · 백엔드 확장자 필터 ON일 때만 적용)</span>
+              </div>
+              <div class="dp-stack-body" style="margin-bottom:14px">
+                <div class="dp-cat-row">
+                  <span class="dp-cat-lbl">언어</span>
+                  <label class="mtoggle"><input type="checkbox" value="java" class="dp-backend-cb"><div class="chk"></div><span class="mlabel">Java (.jsp/.do/.action 등)</span></label>
+                  <label class="mtoggle"><input type="checkbox" value="dotnet" class="dp-backend-cb"><div class="chk"></div><span class="mlabel">.NET (.asp/.aspx 등)</span></label>
+                  <label class="mtoggle"><input type="checkbox" value="php" class="dp-backend-cb"><div class="chk"></div><span class="mlabel">PHP (.php 등)</span></label>
+                </div>
+              </div>
+            </div>
+            <div class="dp-stack-body" id="dp-stack-list">
               <div class="dp-cat-row">
                 <span class="dp-cat-lbl">WEB</span>
                 <label class="mtoggle"><input type="checkbox" value="Apache"><div class="chk"></div><span class="mlabel">Apache</span></label>
@@ -385,6 +409,10 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
                 <label class="mtoggle"><input type="checkbox" value="WebSphere"><div class="chk"></div><span class="mlabel">WebSphere</span></label>
               </div>
               <div class="dp-cat-row">
+                <span class="dp-cat-lbl">ERP</span>
+                <label class="mtoggle"><input type="checkbox" value="SAP"><div class="chk"></div><span class="mlabel">SAP</span></label>
+              </div>
+              <div class="dp-cat-row">
                 <span class="dp-cat-lbl">Application</span>
                 <label class="mtoggle"><input type="checkbox" value="WordPress"><div class="chk"></div><span class="mlabel">WordPress</span></label>
                 <label class="mtoggle"><input type="checkbox" value="Drupal"><div class="chk"></div><span class="mlabel">Drupal</span></label>
@@ -392,6 +420,16 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
                 <label class="mtoggle"><input type="checkbox" value="FCKEditor"><div class="chk"></div><span class="mlabel">FCKEditor</span></label>
                 <label class="mtoggle"><input type="checkbox" value="SmartEditor"><div class="chk"></div><span class="mlabel">SmartEditor</span></label>
                 <label class="mtoggle"><input type="checkbox" value="CrossEditor"><div class="chk"></div><span class="mlabel">CrossEditor</span></label>
+                <label class="mtoggle"><input type="checkbox" value="DEXT5"><div class="chk"></div><span class="mlabel">DEXT5</span></label>
+              </div>
+              <div class="dp-cat-row">
+                <span class="dp-cat-lbl">Framework</span>
+                <label class="mtoggle"><input type="checkbox" value="Spring"><div class="chk"></div><span class="mlabel">Spring</span></label>
+                <label class="mtoggle"><input type="checkbox" value="PHP"><div class="chk"></div><span class="mlabel">PHP</span></label>
+                <label class="mtoggle"><input type="checkbox" value="NodeJS"><div class="chk"></div><span class="mlabel">Node.js</span></label>
+                <label class="mtoggle"><input type="checkbox" value="Laravel"><div class="chk"></div><span class="mlabel">Laravel</span></label>
+                <label class="mtoggle"><input type="checkbox" value="Django"><div class="chk"></div><span class="mlabel">Django</span></label>
+                <label class="mtoggle"><input type="checkbox" value="ASPNET"><div class="chk"></div><span class="mlabel">ASP.NET</span></label>
               </div>
             </div>
           </div>
@@ -569,6 +607,30 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             </div>
           </div>
 
+          <!-- 주입 위치 선택 — boolean 기법 선택 시에만 표시 -->
+          <div id="ext-position-row" class="form-row" hidden>
+            <div class="fg">
+              <label>주입 위치 <span style="color:var(--dim);font-weight:400;font-size:11px">(boolean 전용)</span></label>
+              <select id="ext-position-mode" class="finput" onchange="onPositionModeChange()">
+                <option value="auto">자동 탐지</option>
+                <option value="manual">수동 지정</option>
+              </select>
+            </div>
+            <div class="fg" style="flex:2">
+              <label>위치 값</label>
+              <select id="ext-position-value" class="finput" disabled onchange="onPositionValueChange()">
+                <option value="where">WHERE (AND 조건, 기본)</option>
+                <option value="where_case">WHERE (CASE WHEN 에러 오라클)</option>
+                <option value="orderby">ORDER BY (CASE WHEN 에러 오라클)</option>
+                <option value="custom">직접 입력 (커스텀 템플릿)</option>
+              </select>
+            </div>
+          </div>
+          <div id="ext-blind-template-row" class="fg" style="margin-bottom:16px" hidden>
+            <label>페이로드 템플릿 <span style="color:var(--dim);font-weight:400;font-size:11px">(따옴표·CASE WHEN·주석 포함, <code>{cond}</code> 위치에 이진탐색 조건 삽입)</span></label>
+            <textarea id="ext-blind-template" class="finput" rows="3" style="font-family:'JetBrains Mono',monospace;resize:vertical" placeholder="' AND 1=(CASE WHEN ({cond}) THEN 1 ELSE (SELECT 1 UNION SELECT 2) END)-- "></textarea>
+          </div>
+
           <div class="fg" style="margin-bottom:16px">
             <label>쿠키 <span style="color:var(--dim);font-weight:400;font-size:11px">(선택)</span></label>
             <input id="ext-cookies" class="finput" type="text" placeholder="SESSIONID=abc; token=xyz" autocomplete="off" />
@@ -592,11 +654,11 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             </div>
           </div>
 
-          <div id="ext-union-hex-row" style="margin-bottom:20px" hidden>
-            <label class="mtoggle on" style="display:inline-flex">
-              <input id="ext-union-hex" type="checkbox" checked>
+          <div id="ext-hex-row" style="margin-bottom:20px">
+            <label class="mtoggle" style="display:inline-flex">
+              <input id="ext-hex" type="checkbox">
               <div class="chk"></div>
-              <span class="mlabel">UNION HEX 모드 (multibyte 안전, 기본 ON)</span>
+              <span class="mlabel">HEX 모드 (multibyte 안전, 기본 OFF — ON 시 요청 수 증가하나 multibyte 문자 안전)</span>
             </label>
           </div>
 
@@ -643,6 +705,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             <div class="ext-fp-row"><div class="ext-fp-lbl">DBMS</div><div class="ext-fp-val" id="ext-fp-dbms">-</div></div>
             <div class="ext-fp-row"><div class="ext-fp-lbl">기법</div><div class="ext-fp-val" id="ext-fp-technique">-</div></div>
             <div class="ext-fp-row"><div class="ext-fp-lbl">컨텍스트</div><div class="ext-fp-val" id="ext-fp-context">-</div></div>
+            <div class="ext-fp-row"><div class="ext-fp-lbl">주입 위치</div><div class="ext-fp-val" id="ext-fp-position">-</div></div>
             <div class="ext-fp-row"><div class="ext-fp-lbl">UNION visible 컬럼</div><div class="ext-fp-val" id="ext-fp-union-visible">-</div></div>
           </div>
           <!-- 엑셀 저장 정보 (save_excel=true인 경우만 노출) -->
@@ -660,6 +723,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
           <div class="ext-action-row">
             <button class="btn-act" id="ext-dbms-info-btn" onclick="extractAction({action:'dbms_info'})">DBMS 정보</button>
             <button class="btn-act primary" id="ext-start-wizard-btn" onclick="extractStartWizard()">데이터 추출 시작</button>
+            <button class="btn-act" id="ext-search-toggle-btn" onclick="extractSearchToggle()">특수 검색모드</button>
             <button class="btn-cancel" id="ext-stop-btn" onclick="extractStop()" disabled>■ 중단</button>
             <button class="btn-cancel" id="ext-reset-btn" onclick="extractReset()">↺ 초기화</button>
           </div>
@@ -674,6 +738,12 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             <div class="prog-mod" id="ext-action-detail">-</div>
           </div>
 
+          <!-- 추출 로그 — DB/테이블/컬럼명/행데이터 및 검색 드릴다운 결과가 확인되는 즉시 한 줄씩 기록 (fingerprint 완료 후 항상 노출) -->
+          <div id="ext-live-log-box" style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:6px">추출 로그</div>
+            <div id="ext-live-log" data-empty="true" style="font-size:12px;font-family:monospace;max-height:180px;overflow-y:auto;line-height:1.7;background:var(--surf);border:1px solid var(--border);border-radius:6px;padding:8px 10px;color:var(--mid)">(아직 추출된 이름 없음)</div>
+          </div>
+
           <!-- DBMS 정보 결과 -->
           <div id="ext-dbms-info-result" hidden>
             <div class="ext-info-box">
@@ -682,6 +752,41 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
               <div class="ext-info-row"><div class="ext-info-lbl">Current DB</div><div class="ext-info-val" id="ext-info-current-db">-</div></div>
             </div>
           </div>
+
+          <!-- 특수 검색모드 — DB/테이블/컬럼명 검색 (기법·커스텀 페이로드는 세션 시작 시 확정된 ctx를 그대로 사용) -->
+          <div id="ext-search-panel" hidden style="margin-top:16px">
+            <div class="sec-hd">특수 검색 — DB / 테이블 / 컬럼명 검색</div>
+            <div class="form-row">
+              <div class="fg" style="flex:1">
+                <label>검색 대상</label>
+                <select id="ext-search-target" class="finput">
+                  <option value="database">DB명</option>
+                  <option value="table">테이블명</option>
+                  <option value="column">컬럼명</option>
+                </select>
+              </div>
+              <div class="fg" style="flex:1">
+                <label>매칭 방식</label>
+                <select id="ext-search-match" class="finput">
+                  <option value="contains">포함</option>
+                  <option value="exact">정확히 일치</option>
+                </select>
+              </div>
+              <div class="fg" style="flex:2">
+                <label>검색어</label>
+                <input id="ext-search-keyword" class="finput" type="text" placeholder="검색할 이름 또는 일부 문자열" />
+              </div>
+            </div>
+            <div class="ext-action-row">
+              <button class="btn-act primary" id="ext-search-run-btn" onclick="extractSearchRun()">검색</button>
+            </div>
+
+            <!-- 검색 결과 — [이어서 추출] 클릭 시 해당 위치에서 위저드를 이어서 진행 -->
+            <div id="ext-search-result-wrap" hidden style="margin-top:12px">
+              <div class="sec-hd" id="ext-search-result-hd">검색 결과</div>
+              <div class="ext-list" id="ext-search-result-list"></div>
+            </div>
+          </div><!-- /ext-search-panel -->
 
           <!-- Wizard -->
           <div id="ext-wizard" hidden style="margin-top:16px">
@@ -717,7 +822,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             </div>
 
             <div id="ext-step-dump" class="ext-step">
-              <div class="sec-hd">행 추출 — 테이블: <span id="ext-cur-tbl-2" style="color:var(--accent)"></span></div>
+              <div class="sec-hd">행 추출 — <span id="ext-dump-label">테이블:</span> <span id="ext-cur-tbl-2" style="color:var(--accent)"></span></div>
               <div class="ext-action-row" style="margin-top:8px">
                 <button class="btn-act primary" id="ext-dump-btn" onclick="extractDumpStart()">▶ 추출 실행</button>
                 <button class="btn-act" onclick="extractWizardBack('cols')">← 컬럼 선택으로</button>
@@ -833,6 +938,92 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
 
       </div><!-- /pg-merge -->
 
+      <!-- ── RECON PAGE (정보수집 OSINT) ── -->
+      <div class="pg" id="pg-recon">
+
+        <div class="card">
+          <div class="card-title">정보수집 (OSINT) — 패시브 정찰</div>
+          <div style="color:var(--dim);font-size:12px;margin-bottom:18px;line-height:1.6">
+            대상 도메인·서브도메인으로는 어떤 요청도 보내지 않습니다. crt.sh / Wayback Machine / 공용 DNS 리졸버(8.8.8.8, 1.1.1.1) / Shodan InternetDB — 4개 제3자 소스만 조회하는 순수 패시브 정찰입니다.
+          </div>
+
+          <div class="form-row">
+            <div class="fg" style="flex:3">
+              <label>대상 도메인</label>
+              <input id="recon-domain" class="finput" type="text" placeholder="example.com" />
+            </div>
+            <div class="fg" style="flex:1">
+              <label>Timeout (초)</label>
+              <input id="recon-timeout" class="finput" type="number" value="8" min="3" max="30" />
+            </div>
+            <div class="fg" style="flex:1">
+              <label>서브도메인 DNS 확인 상한</label>
+              <input id="recon-max-subdomains" class="finput" type="number" value="200" min="10" max="1000" />
+            </div>
+          </div>
+
+          <div class="fg" style="margin-bottom:20px">
+            <label>수집 소스</label>
+            <div class="mod-grid" id="recon-src-grid">
+              <div class="mod-cat-row">
+                <label class="mtoggle on"><input type="checkbox" value="crtsh" checked><div class="chk"></div><span class="mlabel">crt.sh (CT 로그 — 서브도메인/인증서)</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="wayback" checked><div class="chk"></div><span class="mlabel">Wayback Machine (아카이브 URL/서브도메인)</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="dns" checked><div class="chk"></div><span class="mlabel">공용 DNS 리졸버 (레코드 조회)</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="internetdb" checked><div class="chk"></div><span class="mlabel">Shodan InternetDB (열린 포트, 무키)</span></label>
+              </div>
+            </div>
+          </div>
+
+          <button class="btn-scan" id="recon-btn" onclick="reconStart()">🛰️ 정보수집 시작</button>
+          <div class="ext-error" id="recon-error" style="margin-top:14px" hidden></div>
+        </div>
+
+        <!-- Progress -->
+        <div class="progress-box" id="recon-prog-box">
+          <div class="prog-hd">
+            <div class="prog-lbl" id="recon-prog-lbl">정보수집 진행 중...</div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <div class="prog-pct" id="recon-prog-pct">0%</div>
+              <button class="btn-cancel" id="recon-btn-cancel" onclick="reconCancel()">■ 중단</button>
+            </div>
+          </div>
+          <div class="prog-bg"><div class="prog-fill" id="recon-prog-fill" style="width:0%"></div></div>
+        </div>
+
+        <!-- 결과 카드 -->
+        <div class="card" id="recon-result-card" hidden>
+          <div class="card-title">정보수집 결과</div>
+
+          <div class="mrg-stat-row">
+            <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-subs">0</div><div class="mrg-stat-lbl">서브도메인</div></div>
+            <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-alive">0</div><div class="mrg-stat-lbl">DNS 생존</div></div>
+            <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-certs">0</div><div class="mrg-stat-lbl">인증서</div></div>
+            <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-urls">0</div><div class="mrg-stat-lbl">아카이브 URL</div></div>
+            <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-ports">0</div><div class="mrg-stat-lbl">포트 확인 IP</div></div>
+          </div>
+
+          <div class="dl-row">
+            <a class="btn-dl disabled" id="recon-dl-html" href="#" download>⬇ HTML 리포트</a>
+            <a class="btn-dl disabled" id="recon-dl-excel" href="#" download>⬇ Excel</a>
+          </div>
+
+          <div class="mrg-warn" id="recon-warn" hidden></div>
+
+          <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">서브도메인</div>
+          <table class="mrg-per-file" id="recon-sub-table">
+            <thead><tr><th>호스트</th><th>생존</th><th>발견 소스</th></tr></thead>
+            <tbody id="recon-sub-body"></tbody>
+          </table>
+
+          <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">열린 포트 (Shodan InternetDB)</div>
+          <table class="mrg-per-file" id="recon-port-table">
+            <thead><tr><th>IP</th><th>열린 포트</th><th>호스트명</th><th>알려진 취약점(CVE)</th></tr></thead>
+            <tbody id="recon-port-body"></tbody>
+          </table>
+        </div>
+
+      </div><!-- /pg-recon -->
+
     </div><!-- /page -->
   </div><!-- /content -->
 </div><!-- /layout -->
@@ -915,6 +1106,34 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
   </div>
 </div>
 
+<!-- 리스트(DB/테이블/컬럼) 부분 추출 이어받기 확인 모달 -->
+<div class="ext-modal-bg" id="ext-list-resume-modal">
+  <div class="ext-modal">
+    <h3>추출이 완료되지 않았습니다</h3>
+    <p id="ext-list-resume-summary" style="color:var(--text);font-weight:500;margin-bottom:10px"></p>
+    <p>나머지를 이어서 추출할까요?</p>
+    <p style="color:var(--dim);font-size:12px;margin-top:6px">[아니요] 선택 시 현재까지 추출된 목록만으로 다음 단계(컬럼 선택·행 데이터 추출)를 진행합니다.</p>
+    <div class="btn-row">
+      <button class="btn-act" onclick="_listResumeAnswer(false)">아니요 (현재까지만 사용)</button>
+      <button class="btn-act primary" onclick="_listResumeAnswer(true)">예 (이어서 추출)</button>
+    </div>
+  </div>
+</div>
+
+<!-- 특수 검색모드 이어받기 확인 모달 -->
+<div class="ext-modal-bg" id="ext-search-resume-modal">
+  <div class="ext-modal">
+    <h3>이전 검색 결과가 있습니다</h3>
+    <p id="ext-search-resume-summary" style="color:var(--text);font-weight:500;margin-bottom:10px"></p>
+    <p>이어서 검색할까요, 새로 검색할까요?</p>
+    <p style="color:var(--dim);font-size:12px;margin-top:6px">[예] 선택 시 저장된 결과에 이어서 나머지만 검색합니다.<br>[아니요] 선택 시 기존 결과를 덮어쓰고 처음부터 새로 검색합니다.</p>
+    <div class="btn-row">
+      <button class="btn-act" onclick="_searchResumeAnswer(false)">아니요 (새로 검색)</button>
+      <button class="btn-act primary" onclick="_searchResumeAnswer(true)">예 (이어서 검색)</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let currentJobId = null;
 let pollTimer    = null;
@@ -934,6 +1153,10 @@ document.querySelectorAll('.mtoggle').forEach(lbl => {
       document.getElementById('ext-excel-name-row').style.display =
         cb.checked ? 'flex' : 'none';
     }
+    // 백엔드 확장자 필터 토글 시 백엔드 언어 선택 영역 활성/비활성 동기화
+    if (cb.id === 'inp-backend-filter') {
+      _syncBackendLangSection();
+    }
   });
 });
 
@@ -945,14 +1168,22 @@ function _syncDpStackSection() {
   sec.style.pointerEvents = enabled ? '' : 'none';
 }
 
+// 백엔드 확장자 필터 ON/OFF에 맞춰 백엔드 언어 선택 영역 활성화/비활성화
+function _syncBackendLangSection() {
+  const on = document.getElementById('inp-backend-filter').checked;
+  const sec = document.getElementById('dp-backend-lang-section');
+  sec.style.opacity = on ? '1' : '.35';
+  sec.style.pointerEvents = on ? '' : 'none';
+}
+
 // ── Page nav ──
 function showPage(name) {
   document.querySelectorAll('.pg').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('pg-' + name).classList.add('active');
-  const idx = ['scan','history','extract','merge'].indexOf(name);
+  const idx = ['recon','scan','history','extract','merge'].indexOf(name);
   document.querySelectorAll('.nav-item')[idx]?.classList.add('active');
-  document.getElementById('topbar-title').textContent = {scan:'스캔 실행', history:'스캔 히스토리', extract:'데이터 추출 (SQLi)', merge:'엑셀 취합'}[name];
+  document.getElementById('topbar-title').textContent = {scan:'스캔 실행', history:'스캔 히스토리', extract:'데이터 추출 (SQLi)', merge:'엑셀 취합', recon:'정보수집 (OSINT)'}[name];
   if (name === 'history') loadHistory();
 }
 
@@ -979,15 +1210,19 @@ async function startScan() {
   const speed     = parseInt(document.getElementById('inp-speed').value) || 5;
   const maxPages  = parseInt(document.getElementById('inp-max-pages').value) || 1000;
   const render    = document.getElementById('inp-render').checked;
+  const backendFilter = document.getElementById('inp-backend-filter').checked;
   const cookies    = document.getElementById('inp-cookies').value.trim();
   const authHeaders = _parseAuthHeaders(document.getElementById('inp-auth-headers').value);
   const proxyUse  = document.getElementById('inp-proxy-use').checked;
   const proxyHost = proxyUse ? (document.getElementById('inp-proxy-host').value.trim() || '127.0.0.1') : null;
   const proxyPort = proxyUse ? (parseInt(document.getElementById('inp-proxy-port').value) || 8080) : null;
-  // Default Pages 추가 점검 스택 — 체크된 항목만 수집 (모듈 OFF이면 빈 배열)
+  // Default Pages 추가 점검 스택 / 백엔드 언어 — 체크된 항목만 수집 (모듈 OFF이면 빈 배열)
   const dpEnabled = document.querySelector('#mod-grid input[value="default_pages"]').checked;
   const dpStacks  = dpEnabled
-    ? [...document.querySelectorAll('#dp-stack-section input:checked')].map(cb => cb.value)
+    ? [...document.querySelectorAll('#dp-stack-list input:checked')].map(cb => cb.value)
+    : [];
+  const dpBackends = dpEnabled
+    ? [...document.querySelectorAll('.dp-backend-cb:checked')].map(cb => cb.value)
     : [];
 
   document.getElementById('btn-scan').disabled = true;
@@ -1004,7 +1239,9 @@ async function startScan() {
       body: JSON.stringify({target: url, modules, timeout, speed, max_pages: maxPages,
                             render, cookies, auth_headers: authHeaders,
                             proxy_host: proxyHost, proxy_port: proxyPort,
-                            default_pages_stacks: dpStacks}),
+                            default_pages_stacks: dpStacks,
+                            default_pages_backends: dpBackends,
+                            backend_filter: backendFilter}),
     });
     const data = await res.json();
     if (data.error) { alert(data.error); _resetUI(); return; }
@@ -1362,10 +1599,15 @@ let extractPollTimer  = null;
 let extractCurrentDb  = null;   // wizard 상태 — 현재 선택한 DB
 let extractCurrentTbl = null;   // wizard 상태 — 현재 선택한 테이블
 let extractColSel     = new Set(); // wizard 상태 — 현재 선택된 컬럼 집합
+let extractWizardMode = 'normal'; // wizard 상태 — 'normal' | 'search' (특수 검색모드 결과에서 이어서 추출)
 let extractEstCache   = null;   // 견적 모달용 임시 캐시 ({db, tbl, cols, limit, offset})
 let extractRetechCache= null;   // 재선택 모달용 임시 캐시 ({fallback})
+let extractLoggedNames= new Set(); // 추출 로그에 이미 기록된 이름 (DB/TBL/COL 중복 방지)
+let extractLogSeeded  = false;  // 첫 폴링에서 기존(이어받기) 이름을 무음 등록했는지 여부
 let extractDbmsCache  = null;   // DBMS 수동 선택 모달용 임시 캐시 ({technique})
 let _reuseModalResolve= null;   // 재사용 확인 모달 Promise resolver
+let _searchResumeResolve = null; // 검색모드 이어받기 확인 모달 Promise resolver
+let _lastSearchHitsSig   = null; // 검색 결과 패널 중복 재렌더 방지 시그니처 (target|match|keyword|hits.length)
 
 // ── 입력 폼 토글 (method/technique/ctx_mode 변경 시 관련 영역 표시) ──
 function _bindExtractFormToggles() {
@@ -1376,9 +1618,12 @@ function _bindExtractFormToggles() {
   });
   const t = document.getElementById('ext-technique');
   t.addEventListener('change', () => {
-    const isUnion = (t.value === 'union');
+    const isUnion   = (t.value === 'union');
+    const isBoolean = (t.value === 'boolean');
     document.getElementById('ext-union-config').hidden = !isUnion;
-    document.getElementById('ext-union-hex-row').hidden = !isUnion;
+    document.getElementById('ext-position-row').hidden = !isBoolean;
+    // boolean이 아니면 커스텀 템플릿도 숨기기
+    if (!isBoolean) document.getElementById('ext-blind-template-row').hidden = true;
   });
   const c = document.getElementById('ext-ctx-mode');
   c.addEventListener('change', () => {
@@ -1404,6 +1649,8 @@ function _resetExtractUI() {
   document.getElementById('ext-retech-modal').classList.remove('show');
   document.getElementById('ext-dbms-modal').classList.remove('show');
   document.getElementById('ext-reuse-modal').classList.remove('show');
+  document.getElementById('ext-search-resume-modal').classList.remove('show');
+  document.getElementById('ext-search-result-wrap').hidden = true;
   document.getElementById('ext-dump-result-wrap').hidden = true;
   document.getElementById('ext-fp-fill').style.width = '0%';
   document.getElementById('ext-fp-pct').textContent = '0%';
@@ -1422,6 +1669,13 @@ function _resetExtractUI() {
   extractRetechCache = null;
   extractDbmsCache   = null;
   extractJobId = null;
+  // 추출 로그 초기화
+  extractLoggedNames = new Set();
+  extractLogSeeded = false;
+  _lastSearchHitsSig = null;
+  const logEl = document.getElementById('ext-live-log');
+  logEl.innerHTML = '(아직 추출된 이름 없음)';
+  logEl.dataset.empty = 'true';
 }
 
 // ── 파라미터 행 관리 ──
@@ -1611,6 +1865,60 @@ async function _checkAndAskReuse(name) {
   }
 }
 
+// ── 리스트(DB/테이블/컬럼) 이어받기 확인 모달 ──
+let _listResumeResolve = null;
+const _extractResumeAcked = new Set();  // 세션 내 "현재까지만 사용" 확정한 리스트 key — 재질문 방지
+
+function _isListComplete(existing, total) {
+  return typeof total === 'number' && (existing ? existing.length : 0) >= total;
+}
+
+function _listResumeAnswer(wantResume) {
+  document.getElementById('ext-list-resume-modal').classList.remove('show');
+  if (_listResumeResolve) {
+    _listResumeResolve(wantResume);
+    _listResumeResolve = null;
+  }
+}
+
+function _showListResumeModal(label, currentCount, total) {
+  document.getElementById('ext-list-resume-summary').textContent =
+    `${label}: 전체 ${total}개 중 ${currentCount}개 추출됨`;
+  document.getElementById('ext-list-resume-modal').classList.add('show');
+  return new Promise(resolve => { _listResumeResolve = resolve; });
+}
+
+// ── 특수 검색모드 이어받기 확인 모달 — 예(이어서 검색)/아니요(새로 검색) ──
+function _searchResumeAnswer(wantResume) {
+  document.getElementById('ext-search-resume-modal').classList.remove('show');
+  if (_searchResumeResolve) {
+    _searchResumeResolve(wantResume);
+    _searchResumeResolve = null;
+  }
+}
+
+function _showSearchResumeModal(currentCount, total) {
+  document.getElementById('ext-search-resume-summary').textContent =
+    `전체 ${total}건 중 ${currentCount}건 검색됨`;
+  document.getElementById('ext-search-resume-modal').classList.add('show');
+  return new Promise(resolve => { _searchResumeResolve = resolve; });
+}
+
+// existing/total로 부분 추출 여부를 판정 — 필요 시 이어받기 팝업을 띄운다.
+// 반환값 true = 액션 호출(신규 추출 또는 이어서 추출) 필요, false = 기존 목록 그대로 사용
+async function _shouldFetchList(key, existing, total, label) {
+  const arr = existing || [];
+  if (arr.length === 0) return true;
+  if (_isListComplete(arr, total)) return false;
+  if (_extractResumeAcked.has(key)) return false;
+  const wantResume = await _showListResumeModal(label, arr.length, total);
+  if (!wantResume) {
+    _extractResumeAcked.add(key);
+    return false;
+  }
+  return true;
+}
+
 // ── Fingerprint 시작 (메인 진입점) ──
 async function startExtract() {
   const target = document.getElementById('ext-target').value.trim();
@@ -1628,9 +1936,12 @@ async function startExtract() {
   const timeout    = parseInt(document.getElementById('ext-timeout').value) || 10;
   const ctxMode    = document.getElementById('ext-ctx-mode').value;
   const ctxValue   = document.getElementById('ext-ctx-value').value;
+  const posMode    = document.getElementById('ext-position-mode').value;
+  const posValue   = document.getElementById('ext-position-value').value;
+  const blindTpl   = document.getElementById('ext-blind-template').value.trim();
   const cookies    = document.getElementById('ext-cookies').value.trim();
   const authText   = document.getElementById('ext-auth-headers').value;
-  const unionHex   = document.getElementById('ext-union-hex').checked;
+  const useHex     = document.getElementById('ext-hex').checked;
   const proxyUse   = document.getElementById('ext-proxy-use').checked;
   const proxyHost  = proxyUse ? (document.getElementById('ext-proxy-host').value.trim() || '127.0.0.1') : null;
   const proxyPort  = proxyUse ? (parseInt(document.getElementById('ext-proxy-port').value) || 8080) : null;
@@ -1661,6 +1972,18 @@ async function startExtract() {
     }
   }
 
+  // custom position 검증
+  if (posMode === 'manual' && posValue === 'custom') {
+    if (!blindTpl) {
+      alert('커스텀 템플릿을 입력하세요.');
+      return;
+    }
+    if (!blindTpl.includes('{cond}')) {
+      alert('템플릿에 {cond} 자리표시자가 없습니다.\n예: \' AND 1=(CASE WHEN ({cond}) THEN 1 ELSE (SELECT 1 UNION SELECT 2) END)-- ');
+      return;
+    }
+  }
+
   // 엑셀 저장 이름 검증 + 기존 파일 확인
   const saveExcel = document.getElementById('ext-save-excel').checked;
   const excelName = (document.getElementById('ext-excel-name').value || '').trim();
@@ -1686,8 +2009,10 @@ async function startExtract() {
         union_visible: unionVisible ? parseInt(unionVisible) : null,
         union_row_batch: unionRowBatch,
         context_mode: ctxMode, context_value: ctxValue,
+        position_mode: posMode, position_value: posValue,
+        blind_template: blindTpl || undefined,
         dbms: document.getElementById('ext-dbms-preset').value || '',
-        speed, timeout, cookies, auth_headers: authHeaders, union_hex: unionHex,
+        speed, timeout, cookies, auth_headers: authHeaders, use_hex: useHex,
         proxy_host: proxyHost, proxy_port: proxyPort,
         base64_encode: document.getElementById('ext-base64-encode').checked,
         save_excel: saveExcel,
@@ -1727,6 +2052,8 @@ function _setExtractBusy(busy) {
   document.getElementById('ext-start-wizard-btn').disabled = busy;
   document.querySelectorAll('#ext-wizard button').forEach(b => { b.disabled = busy; });
   document.getElementById('ext-wizard').classList.toggle('ext-busy', busy);
+  document.querySelectorAll('#ext-search-panel button').forEach(b => { b.disabled = busy; });
+  document.getElementById('ext-search-panel').classList.toggle('ext-busy', busy);
 }
 
 // ── /status 1회 fetch ──
@@ -1781,6 +2108,8 @@ function _renderExtractStatus(j) {
       _renderDbmsInfo(info);
     }
     _renderExcelInfo(j);
+    _renderLiveLog(j);
+    _maybeRenderSearchResults(j);
     return;
   }
 
@@ -1794,6 +2123,8 @@ function _renderExtractStatus(j) {
     _setExtractBusy(true);
     _renderActionProgress(j);
     _renderExcelInfo(j);
+    _renderLiveLog(j);
+    _maybeRenderSearchResults(j);
     return;
   }
 
@@ -1817,6 +2148,16 @@ function _renderFingerprint(fp) {
   document.getElementById('ext-fp-technique').textContent = fp.technique || '-';
   document.getElementById('ext-fp-context').textContent =
     (fp.context === null || fp.context === '') ? 'numeric' : (fp.context || '-');
+  const posLabels = {where: 'WHERE (AND)', where_case: 'WHERE (CASE WHEN)', orderby: 'ORDER BY (CASE WHEN)', custom: '커스텀 템플릿'};
+  const posEl = document.getElementById('ext-fp-position');
+  posEl.textContent = posLabels[fp.position] || fp.position || '-';
+  if (fp.position === 'custom' && fp.blind_template) {
+    posEl.title = fp.blind_template;
+    posEl.style.cursor = 'help';
+  } else {
+    posEl.title = '';
+    posEl.style.cursor = '';
+  }
   const uvIdx = fp.union_visible_idx;
   document.getElementById('ext-fp-union-visible').textContent =
     (typeof uvIdx === 'number' && uvIdx >= 0) ? String(uvIdx + 1) : '미사용';
@@ -1887,6 +2228,104 @@ function _renderExcelInfo(j) {
   }
 }
 
+// ── extracted(또는 search_extracted) 구조 하나를 훑어 로그 entry 배열로 변환 ──
+//    prefix가 dedup 키 접두사(일반='', 검색 드릴다운='S:')를 구분해 같은 이름이
+//    양쪽에 동시에 존재해도 서로의 dedup Set을 침범하지 않게 한다.
+//    행데이터(dumps)는 컬럼 값을 ' | '로 이어붙여 한 행 = 로그 한 줄로 기록한다
+//    (행 인덱스 기준 dedup — 같은 테이블에 새 컬럼이 이어붙는 검색모드 병합 시
+//    이미 찍힌 행은 재로그되지 않는다).
+function _collectDataEntries(ext, prefix, tblCat, colCat, rowCat) {
+  const entries = [];
+  (ext.databases || []).forEach(db => {
+    entries.push({cat: prefix ? `${prefix}DB` : 'DB', name: db, key: `${prefix}DB:${db}`});
+  });
+  const tables = ext.tables || {};
+  Object.keys(tables).forEach(db => {
+    (tables[db] || []).forEach(tbl => {
+      const name = `${db}.${tbl}`;
+      entries.push({cat: tblCat, name, key: `${prefix}TBL:${name}`});
+    });
+  });
+  const columns = ext.columns || {};
+  Object.keys(columns).forEach(key => {
+    (columns[key] || []).forEach(col => {
+      const name = `${key}.${col}`;
+      entries.push({cat: colCat, name, key: `${prefix}COL:${name}`});
+    });
+  });
+  const dumps = ext.dumps || {};
+  Object.keys(dumps).forEach(key => {
+    const rows = (dumps[key] || {}).rows || [];
+    rows.forEach((row, idx) => {
+      entries.push({cat: rowCat, name: `${key}  ${row.join(' | ')}`, key: `${prefix}ROW:${key}#${idx}`});
+    });
+  });
+  return entries;
+}
+
+// ── 추출 로그 렌더 — DB/테이블/컬럼명/행데이터 및 특수 검색모드 히트·드릴다운 결과가
+//    새로 확인될 때마다 한 줄씩 추가 ──
+// 폴링마다 extracted(databases/tables/columns/dumps) + search_extracted 전체
+// (databases/tables/columns/dumps + search.hits)를 훑어 extractLoggedNames에 없는
+// 항목만 로그에 append한다. 첫 호출(이어받기로 기존 항목이 이미 있는 경우)에는
+// 무음으로 Set에만 등록해 재개 시 전체 목록이 한꺼번에 쏟아지는 것을 방지한다.
+function _renderLiveLog(j) {
+  const extracted = j.extracted || {};
+  const entries = _collectDataEntries(extracted, '', 'TBL', 'COL', 'ROW');
+
+  // 특수 검색모드 히트 — 검색어별로 dedup 키를 분리해 재검색 시 다시 로그에 찍히게 함
+  const searchExt = j.search_extracted || {};
+  const search = searchExt.search || {};
+  (search.hits || []).forEach(h => {
+    entries.push({cat: 'HIT', name: h.display, key: `HIT:${search.keyword || ''}:${h.display}`});
+  });
+  // 특수 검색모드 드릴다운(이어서 추출) 결과 — search_extracted에 격리 저장된
+  // tables/columns/dumps. 일반 추출과 dedup 키가 겹치지 않도록 'S:' 접두사 사용
+  entries.push(..._collectDataEntries(searchExt, 'S:', 'S-TBL', 'S-COL', 'S-ROW'));
+
+  const keyOf = e => e.key || `${e.cat}:${e.name}`;
+  const fresh = entries.filter(e => !extractLoggedNames.has(keyOf(e)));
+  fresh.forEach(e => extractLoggedNames.add(keyOf(e)));
+
+  // 첫 호출 — 이어받기로 이미 존재하는 이름은 로그에 찍지 않고 등록만 함
+  if (!extractLogSeeded) {
+    extractLogSeeded = true;
+    return;
+  }
+  if (fresh.length === 0) return;
+
+  const logEl = document.getElementById('ext-live-log');
+  if (logEl.dataset.empty !== 'false') {
+    logEl.innerHTML = '';
+    logEl.dataset.empty = 'false';
+  }
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  fresh.forEach(e => {
+    const div = document.createElement('div');
+    // textContent로 삽입하여 DB/테이블/컬럼명의 특수문자로 인한 렌더링 오염 방지
+    div.textContent = `· ${hh}:${mm}:${ss}  ${e.cat}  ${e.name}`;
+    logEl.appendChild(div);
+  });
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ── 검색 결과 패널(이어서 추출 버튼 포함) 재렌더 — 상시 폴러(_renderExtractStatus)가 호출한다.
+//    일회성 대기(_waitForExtracted)에 의존하지 않으므로 5분 초과 검색·새로고침에도
+//    hits가 갱신될 때마다(또는 폴링 재개 시) 안정적으로 패널이 그려진다.
+//    (target|match|keyword|hits.length) 시그니처가 바뀔 때만 재렌더해 800ms마다
+//    DOM을 불필요하게 재생성하지 않는다.
+function _maybeRenderSearchResults(j) {
+  const search = (j.search_extracted || {}).search;
+  if (!search || !Array.isArray(search.hits)) return;
+  const sig = `${search.target}|${search.match}|${search.keyword}|${search.hits.length}`;
+  if (sig === _lastSearchHitsSig) return;
+  _lastSearchHitsSig = sig;
+  _renderSearchResults(search.hits);
+}
+
 // ── 에러 메시지 표시 ──
 function _showExtractError(msg) {
   document.getElementById('ext-error-card').hidden = false;
@@ -1922,8 +2361,18 @@ async function extractAction(opts) {
   }
 }
 
+// ── 위저드 모드 헬퍼 — 'normal'(일반 추출) / 'search'(특수 검색모드 결과에서 이어서 추출) ──
+//    검색 드릴다운은 tables/columns/dump 액션을 그대로 재사용하되 search_extracted에 격리 저장한다.
+function _extKey() { return extractWizardMode === 'search' ? 'search_extracted' : 'extracted'; }
+function _extActionOpts(opts) {
+  if (extractWizardMode === 'search') opts.search_mode = true;
+  return opts;
+}
+
 // ── 데이터 추출 시작 (Wizard 진입) ──
 async function extractStartWizard() {
+  extractWizardMode = 'normal';
+  document.getElementById('ext-search-panel').hidden = true; // 특수 검색모드 박스 숨김 (상호 배타)
   document.getElementById('ext-wizard').hidden = false;
   await _loadDbList();
   _extractGotoStep('dbs');
@@ -1951,79 +2400,104 @@ function extractWizardBack(step) {
   _extractGotoStep(step);
 }
 
-// ── DB 리스트 로드 (캐시 있으면 그대로, 없으면 액션 트리거 + 폴링) ──
+// ── DB 리스트 로드 (완료된 캐시면 그대로, 부분/미추출이면 이어받기 확인 후 액션 트리거 + 폴링) ──
 async function _loadDbList() {
+  const key = _extKey();
   const j0 = await _fetchExtractStatus();
-  const _arr = j0 && j0.extracted && j0.extracted.databases;
-  // [] 은 JS에서 truthy라 빈 배열도 캐시 히트로 잘못 분류됨 — 항목이 있을 때만 캐시 사용
-  const cached = (Array.isArray(_arr) && _arr.length > 0) ? _arr : null;
-  if (cached) {
-    _renderDbList(cached);
+  const existing = (j0 && j0[key] && j0[key].databases) || [];
+  const total = j0 && j0[key] && j0[key].totals && j0[key].totals.databases;
+  const needFetch = await _shouldFetchList('databases', existing, total, 'DB 목록');
+  if (!needFetch) {
+    _renderDbList(existing);
     return;
   }
-  const ack = await extractAction({action: 'databases'});
+  const ack = await extractAction(_extActionOpts({action: 'databases'}));
   if (!ack) return;
   if (ack.cached) {
     const j = await _fetchExtractStatus();
-    _renderDbList((j && j.extracted && j.extracted.databases) || []);
+    _renderDbList((j && j[key] && j[key].databases) || []);
     return;
   }
-  // 백그라운드 실행 — extracted.databases 채워질 때까지 폴링 (빈 배열은 falsy 처리)
+  // 백그라운드 실행 — total 충족(완료)까지 폴링
   const j2 = await _waitForExtracted(s => {
-    const arr = s.extracted && s.extracted.databases;
-    return Array.isArray(arr) && arr.length > 0;
+    const arr = (s[key] && s[key].databases) || [];
+    const t = s[key] && s[key].totals && s[key].totals.databases;
+    return _isListComplete(arr, t);
   });
-  _renderDbList((j2 && j2.extracted && j2.extracted.databases) || []);
+  _renderDbList((j2 && j2[key] && j2[key].databases) || []);
 }
 
 // ── 테이블 리스트 로드 ──
 async function _loadTblList(db) {
+  const key = _extKey();
   extractCurrentDb = db;
   document.getElementById('ext-cur-db').textContent = db;
   const j0 = await _fetchExtractStatus();
-  const cached = (j0 && j0.extracted && j0.extracted.tables && j0.extracted.tables[db]) || null;
-  if (cached) {
-    _renderTblList(cached);
+  const existing = (j0 && j0[key] && j0[key].tables && j0[key].tables[db]) || [];
+  const total = j0 && j0[key] && j0[key].totals &&
+                j0[key].totals.tables && j0[key].totals.tables[db];
+  const needFetch = await _shouldFetchList(`tables:${db}`, existing, total, `${db} 테이블 목록`);
+  if (!needFetch) {
+    _renderTblList(existing);
     return;
   }
   // 캐시 미스 — 이전 회차 잔존 리스트 즉시 제거
   document.getElementById('ext-tbl-list').innerHTML = '';
-  const ack = await extractAction({action: 'tables', database: db});
+  const ack = await extractAction(_extActionOpts({action: 'tables', database: db}));
   if (!ack) return;
   if (ack.cached) {
     const j = await _fetchExtractStatus();
-    _renderTblList((j && j.extracted && j.extracted.tables && j.extracted.tables[db]) || []);
+    _renderTblList((j && j[key] && j[key].tables && j[key].tables[db]) || []);
     return;
   }
-  const j2 = await _waitForExtracted(s =>
-    (s.extracted && s.extracted.tables && s.extracted.tables[db]));
-  _renderTblList((j2 && j2.extracted && j2.extracted.tables && j2.extracted.tables[db]) || []);
+  const j2 = await _waitForExtracted(s => {
+    const arr = (s[key] && s[key].tables && s[key].tables[db]) || [];
+    const t = s[key] && s[key].totals &&
+              s[key].totals.tables && s[key].totals.tables[db];
+    return _isListComplete(arr, t);
+  });
+  _renderTblList((j2 && j2[key] && j2[key].tables && j2[key].tables[db]) || []);
 }
 
 // ── 컬럼 리스트 로드 ──
 async function _loadColList(db, tbl) {
+  const extKey = _extKey();
   extractCurrentTbl = tbl;
   document.getElementById('ext-cur-tbl').textContent = tbl;
   document.getElementById('ext-cur-tbl-2').textContent = tbl;
   const key = `${db}.${tbl}`;
   const j0 = await _fetchExtractStatus();
-  const cached = (j0 && j0.extracted && j0.extracted.columns && j0.extracted.columns[key]) || null;
-  if (cached) {
-    _renderColList(cached);
+  const existing = (j0 && j0[extKey] && j0[extKey].columns && j0[extKey].columns[key]) || [];
+  const hasDump = !!(j0 && j0[extKey] && j0[extKey].dumps && j0[extKey].dumps[key]);
+  // 이미 행 데이터까지 추출된 테이블은 컬럼 목록이 dump 헤더(선택된 일부 컬럼)로 대체되어
+  // 있을 수 있어 총개수 비교가 무의미함 — 이어받기 팝업 없이 그대로 사용
+  if (hasDump && existing.length > 0) {
+    _renderColList(existing);
+    return;
+  }
+  const total = j0 && j0[extKey] && j0[extKey].totals &&
+                j0[extKey].totals.columns && j0[extKey].totals.columns[key];
+  const needFetch = await _shouldFetchList(`columns:${key}`, existing, total, `${tbl} 컬럼 목록`);
+  if (!needFetch) {
+    _renderColList(existing);
     return;
   }
   // 캐시 미스 — 이전 회차 잔존 리스트 즉시 제거
   document.getElementById('ext-col-list').innerHTML = '';
-  const ack = await extractAction({action: 'columns', database: db, table: tbl});
+  const ack = await extractAction(_extActionOpts({action: 'columns', database: db, table: tbl}));
   if (!ack) return;
   if (ack.cached) {
     const j = await _fetchExtractStatus();
-    _renderColList((j && j.extracted && j.extracted.columns && j.extracted.columns[key]) || []);
+    _renderColList((j && j[extKey] && j[extKey].columns && j[extKey].columns[key]) || []);
     return;
   }
-  const j2 = await _waitForExtracted(s =>
-    (s.extracted && s.extracted.columns && s.extracted.columns[key]));
-  _renderColList((j2 && j2.extracted && j2.extracted.columns && j2.extracted.columns[key]) || []);
+  const j2 = await _waitForExtracted(s => {
+    const arr = (s[extKey] && s[extKey].columns && s[extKey].columns[key]) || [];
+    const t = s[extKey] && s[extKey].totals &&
+              s[extKey].totals.columns && s[extKey].totals.columns[key];
+    return _isListComplete(arr, t);
+  });
+  _renderColList((j2 && j2[extKey] && j2[extKey].columns && j2[extKey].columns[key]) || []);
 }
 
 // ── extracted[키] 채워질 때까지 임시 폴링 (400ms × 최대 ~5분) ──
@@ -2133,17 +2607,34 @@ function extractColAll() {
 }
 
 // ── 컬럼 선택 완료 → dump 단계 ──
-async function extractColConfirm() {
+//    pathLabel 지정 시(검색모드 컬럼 히트 드릴다운) 헤딩을 "경로: db.table.column"으로
+//    표시하고, clearResult로 이전 드릴다운의 결과 표를 무조건 비워 어떤 이어받기를
+//    선택했는지 혼동 없이 드러낸다. 일반 위저드 흐름(인자 없음)은 기존 동작 그대로
+//    "테이블: <tbl>" 헤딩 + 캐시된 dump 결과를 이어서 보여준다.
+async function extractColConfirm(opts = {}) {
+  const { pathLabel = null, clearResult = false } = opts;
   if (extractColSel.size === 0) {
     alert('컬럼을 1개 이상 선택하세요.');
     return;
   }
   _extractGotoStep('dump');
+
+  document.getElementById('ext-dump-label').textContent = pathLabel ? '경로:' : '테이블:';
+  document.getElementById('ext-cur-tbl-2').textContent = pathLabel || extractCurrentTbl;
+
+  const wrap = document.getElementById('ext-dump-result-wrap');
+  if (clearResult) {
+    document.getElementById('ext-dump-thead').innerHTML = '';
+    document.getElementById('ext-dump-tbody').innerHTML = '';
+    wrap.hidden = true;
+    return;
+  }
+
   // 행 추출 결과 영역 — 현재 (db, tbl)의 캐시 dump 있으면 표시, 없으면 초기화
+  const extKey = _extKey();
   const key = `${extractCurrentDb}.${extractCurrentTbl}`;
   const j = await _fetchExtractStatus();
-  const dump = (j && j.extracted && j.extracted.dumps && j.extracted.dumps[key]) || null;
-  const wrap = document.getElementById('ext-dump-result-wrap');
+  const dump = (j && j[extKey] && j[extKey].dumps && j[extKey].dumps[key]) || null;
   if (dump && Array.isArray(dump.rows)) {
     _renderDumpTable(dump.columns, dump.rows);
   } else {
@@ -2153,7 +2644,9 @@ async function extractColConfirm() {
   }
 }
 
-// ── Dump 1단계: estimate-only POST → 모달 ──
+// ── Dump 1단계: estimate 백그라운드 실행(COUNT) → 완료 대기 → 모달 ──
+//    COUNT는 Boolean-blind 기준 15~20+ 요청이 걸릴 수 있어 다른 액션과 동일하게
+//    백그라운드 스레드에서 실행되고, 완료될 때까지 폴링으로 대기한다.
 async function extractDumpStart() {
   if (!extractCurrentDb || !extractCurrentTbl) {
     alert('DB/테이블이 선택되지 않았습니다.');
@@ -2165,18 +2658,23 @@ async function extractDumpStart() {
   }
   const cols = [...extractColSel];
 
-  const ack = await extractAction({
+  const ack = await extractAction(_extActionOpts({
     action: 'dump',
     database: extractCurrentDb,
     table: extractCurrentTbl,
     columns: cols,
     confirm: false,
-  });
+  }));
   if (!ack) return;
+  // COUNT 계산이 백그라운드에서 실행되는 동안 즉시 잠금 (폴링 주기 800ms 대기 없이)
+  _setExtractBusy(true);
+  const s = await _waitForExtracted(st => st.current_action_id === null);
+  _setExtractBusy(false);
+  if (!s || s.status !== 'ready') return;  // 오류/취소는 상시 폴러가 오류 표시를 담당
   // 견적 모달 열기
   extractEstCache = {db: extractCurrentDb, tbl: extractCurrentTbl, cols};
-  const est = ack.estimate || {};
-  const resumeFrom = ack.resume_from || 0;
+  const est = s.estimate || {};
+  const resumeFrom = s.estimate_resume_from || 0;
   document.getElementById('ext-est-table').textContent = `${extractCurrentDb}.${extractCurrentTbl}`;
   document.getElementById('ext-est-cols').textContent = String(cols.length);
   // 이어받기 시 "N행 남음 (완료: k행)" 형태로 표시
@@ -2199,10 +2697,11 @@ async function extractDumpStart() {
 async function extractEstimateConfirm() {
   if (!extractEstCache) return;
   const {db, tbl, cols} = extractEstCache;
+  const extKey = _extKey();
   document.getElementById('ext-estimate-modal').classList.remove('show');
-  const ack = await extractAction({
+  const ack = await extractAction(_extActionOpts({
     action: 'dump', database: db, table: tbl, columns: cols, confirm: true,
-  });
+  }));
   if (!ack) return;
   // dump 시작 확정 — 폴링 주기(800ms)를 기다리지 않고 즉시 잠금
   _setExtractBusy(true);
@@ -2210,9 +2709,9 @@ async function extractEstimateConfirm() {
   // (dump 시작 즉시 key가 등록되므로 key 존재 여부만 체크하면 빈 행이 반환됨)
   const key = `${db}.${tbl}`;
   const s = await _waitForExtracted(st =>
-    st.status === 'ready' && !!(st.extracted && st.extracted.dumps && st.extracted.dumps[key]));
+    st.status === 'ready' && !!(st[extKey] && st[extKey].dumps && st[extKey].dumps[key]));
   if (!s) return;
-  const dump = s.extracted.dumps[key];
+  const dump = s[extKey].dumps[key];
   if (dump) _renderDumpTable(dump.columns, dump.rows);
   extractEstCache = null;
 }
@@ -2221,6 +2720,122 @@ async function extractEstimateConfirm() {
 function extractEstimateCancel() {
   document.getElementById('ext-estimate-modal').classList.remove('show');
   extractEstCache = null;
+}
+
+// ── 특수 검색모드 패널 표시/숨김 ──
+function extractSearchToggle() {
+  const panel = document.getElementById('ext-search-panel');
+  panel.hidden = !panel.hidden;
+  document.getElementById('ext-wizard').hidden = true; // 일반 추출 위저드 숨김 (상호 배타)
+}
+
+// ── 특수 검색모드 실행 — DB/테이블/컬럼명 검색 (기법·커스텀 페이로드는 세션 ctx 그대로 사용) ──
+//    엑셀 저장이 켜져 있으면 실행 전 동일 (target/match/keyword) 조합의 기존 검색 결과를
+//    조회해 이어받기 여부를 결정한다 — 완료된 결과는 재요청 없이 조용히 재사용,
+//    부분 결과는 모달로 사용자에게 이어서/새로 검색을 확인한다.
+//    결과 패널([이어서 추출] 버튼)은 상시 폴러(_maybeRenderSearchResults)가 그린다.
+async function extractSearchRun() {
+  const target = document.getElementById('ext-search-target').value;
+  const match = document.getElementById('ext-search-match').value;
+  const keyword = document.getElementById('ext-search-keyword').value.trim();
+  if (!keyword) {
+    alert('검색어를 입력하세요.');
+    return;
+  }
+  document.getElementById('ext-search-result-wrap').hidden = true;
+  _lastSearchHitsSig = null; // 새 실행 시 폴러가 결과 패널을 강제로 다시 그리도록 리셋
+
+  let resumeSearch = false;
+  const st = await _fetchExtractStatus();
+  if (st && st.save_excel && st.excel_name) {
+    try {
+      const r = await fetch(`/api/extract/search-check-existing?` +
+        `name=${encodeURIComponent(st.excel_name)}&target=${encodeURIComponent(target)}` +
+        `&match=${encodeURIComponent(match)}&keyword=${encodeURIComponent(keyword)}`);
+      if (r.ok) {
+        const j = await r.json();
+        if (j.exists) {
+          if (j.current_count >= j.total) {
+            // 이미 완료된 검색 — 재요청 없이 조용히 이어받기(결과 그대로 즉시 반영)
+            resumeSearch = true;
+          } else {
+            resumeSearch = await _showSearchResumeModal(j.current_count, j.total);
+          }
+        }
+      }
+    } catch (e) { /* 조회 실패 시 새 검색으로 진행 */ }
+  }
+
+  const ack = await extractAction({
+    action: 'search', search_mode: true,
+    search_target: target, search_match: match, search_keyword: keyword,
+    resume_search: resumeSearch,
+  });
+  if (!ack) return;
+}
+
+// ── 검색 결과 렌더 — 각 항목에 [이어서 추출] 버튼으로 위저드 드릴다운 연결 (XSS-safe textContent) ──
+function _renderSearchResults(hits) {
+  const wrap = document.getElementById('ext-search-result-wrap');
+  const hd = document.getElementById('ext-search-result-hd');
+  const list = document.getElementById('ext-search-result-list');
+  wrap.hidden = false;
+  hd.textContent = `검색 결과 (${hits.length}건)`;
+  list.innerHTML = '';
+  if (!hits.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ext-list-empty';
+    empty.textContent = '일치하는 결과가 없습니다.';
+    list.appendChild(empty);
+    return;
+  }
+  for (const hit of hits) {
+    const item = document.createElement('div');
+    item.className = 'ext-list-item';
+    item.style.justifyContent = 'space-between';
+
+    const label = document.createElement('span');
+    label.textContent = hit.display;
+    item.appendChild(label);
+
+    const btn = document.createElement('button');
+    btn.className = 'btn-act';
+    btn.style.cssText = 'padding:4px 10px;font-size:11px;flex-shrink:0';
+    btn.textContent = '이어서 추출';
+    btn.addEventListener('click', () => extractSearchDrilldown(hit));
+    item.appendChild(btn);
+
+    list.appendChild(item);
+  }
+}
+
+// ── 검색 결과 히트에서 이어서 추출 — 원래 위저드 순서를 그대로 따름 ──
+//    DB 히트 → 테이블 목록부터, Table 히트 → 컬럼 목록부터, Column 히트 → 해당 컬럼 단일 dump부터
+async function extractSearchDrilldown(hit) {
+  extractWizardMode = 'search';
+  document.getElementById('ext-wizard').hidden = false;
+  if (hit.column) {
+    // 컬럼 히트 — 해당 컬럼 하나만 선택된 상태로 dump 단계까지 이동 (추출 실행은 [▶ 추출 실행] 버튼으로 별도 트리거)
+    // 헤딩에 db.table.column 전체 경로를 표시하고 이전 드릴다운의 결과 표를 비워
+    // (동일 테이블의 다른 컬럼이어도) 어떤 이어받기를 선택했는지 명확히 구분한다.
+    extractCurrentDb = hit.db;
+    extractCurrentTbl = hit.table;
+    document.getElementById('ext-cur-db').textContent = hit.db;
+    document.getElementById('ext-cur-tbl').textContent = hit.table;
+    extractColSel = new Set([hit.column]);
+    await extractColConfirm({ pathLabel: `${hit.db}.${hit.table}.${hit.column}`, clearResult: true });
+  } else if (hit.table) {
+    // 테이블 히트 — 컬럼 목록부터 이어서 추출
+    extractCurrentDb = hit.db;
+    document.getElementById('ext-cur-db').textContent = hit.db;
+    extractColSel = new Set();
+    _extractGotoStep('cols');
+    await _loadColList(hit.db, hit.table);
+  } else {
+    // DB 히트 — 테이블 목록부터 이어서 추출
+    _extractGotoStep('tables');
+    await _loadTblList(hit.db);
+  }
 }
 
 // ── Dump 결과 표 렌더 (XSS-safe textContent) ──
@@ -2256,6 +2871,23 @@ function onDbmsPresetChange() {
   const dbms = document.getElementById('ext-dbms-preset').value;
   const tech = document.getElementById('ext-technique').value;
   document.getElementById('ext-dbms-preset-warn').hidden = !(dbms === 'SQLite' && tech === 'error');
+}
+
+function onPositionModeChange() {
+  const mode = document.getElementById('ext-position-mode').value;
+  const isManual = (mode === 'manual');
+  document.getElementById('ext-position-value').disabled = !isManual;
+  // auto로 전환 시 커스텀 템플릿 숨기기
+  if (!isManual) {
+    document.getElementById('ext-blind-template-row').hidden = true;
+  } else {
+    onPositionValueChange();
+  }
+}
+
+function onPositionValueChange() {
+  const val = document.getElementById('ext-position-value').value;
+  document.getElementById('ext-blind-template-row').hidden = (val !== 'custom');
 }
 
 // ── DBMS 수동 선택 모달 (자동 식별 실패 시) ──
@@ -2400,13 +3032,17 @@ async function extractReset() {
   const j = await _fetchExtractStatus();
   const status = j ? j.status : null;
 
-  // 누적 데이터 유무 확인 (confirm 문구 분기)
+  // 누적 데이터 유무 확인 (confirm 문구 분기) — 일반 추출 + 특수 검색모드 결과 모두 포함
   const ext = (j && j.extracted) || {};
+  const sext = (j && j.search_extracted) || {};
   const hasData = !!(
     (ext.databases && ext.databases.length) ||
     (ext.dbms_info && Object.values(ext.dbms_info).some(Boolean)) ||
     (ext.tables && Object.keys(ext.tables).length) ||
-    (ext.dumps && Object.keys(ext.dumps).length)
+    (ext.dumps && Object.keys(ext.dumps).length) ||
+    (sext.search && sext.search.hits && sext.search.hits.length) ||
+    (sext.tables && Object.keys(sext.tables).length) ||
+    (sext.dumps && Object.keys(sext.dumps).length)
   );
 
   if (status === 'extracting' || status === 'fingerprinting') {
@@ -2442,9 +3078,22 @@ function _mrgRenderFileList() {
     const item = document.createElement('div');
     item.className = 'mrg-file-item';
     const sizeMb = (f.size / 1024 / 1024).toFixed(2);
-    item.innerHTML = `<span class="mrg-file-name" title="${f.name}">${f.name}</span>`
-      + `<span class="mrg-file-size">${sizeMb} MB</span>`
-      + `<button class="mrg-file-del" title="제거" onclick="mrgRemoveFile(${i})">✕</button>`;
+    // 파일명은 사용자가 선택한 로컬 파일 기반(악의적 이름 가능) — textContent로 삽입
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'mrg-file-name';
+    nameSpan.title = f.name;
+    nameSpan.textContent = f.name;
+    const sizeSpan = document.createElement('span');
+    sizeSpan.className = 'mrg-file-size';
+    sizeSpan.textContent = `${sizeMb} MB`;
+    const delBtn = document.createElement('button');
+    delBtn.className = 'mrg-file-del';
+    delBtn.title = '제거';
+    delBtn.textContent = '✕';
+    delBtn.onclick = () => mrgRemoveFile(i);
+    item.appendChild(nameSpan);
+    item.appendChild(sizeSpan);
+    item.appendChild(delBtn);
     list.appendChild(item);
   });
 }
@@ -2557,13 +3206,43 @@ function _mrgRenderResult(data) {
   tbody.innerHTML = '';
   (data.per_file || []).forEach(f => {
     const tr = document.createElement('tr');
-    const newColText = f.new_columns && f.new_columns.length > 0
-      ? `<span class="new-cols">+${f.new_columns.length}개</span>`
-      : '—';
-    const status = f.skipped
-      ? `<span class="skipped">오류: ${f.error || '알 수 없음'}</span>`
-      : `<span style="color:var(--green)">완료</span>`;
-    tr.innerHTML = `<td>${f.name}</td><td>${f.sheets_read}</td><td>${f.rows_added.toLocaleString()}</td><td>${newColText}</td><td>${status}</td>`;
+
+    const tdName = document.createElement('td');
+    tdName.textContent = f.name;
+
+    const tdSheets = document.createElement('td');
+    tdSheets.textContent = f.sheets_read;
+
+    const tdRows = document.createElement('td');
+    tdRows.textContent = f.rows_added.toLocaleString();
+
+    const tdNewCols = document.createElement('td');
+    if (f.new_columns && f.new_columns.length > 0) {
+      const span = document.createElement('span');
+      span.className = 'new-cols';
+      span.textContent = `+${f.new_columns.length}개`;
+      tdNewCols.appendChild(span);
+    } else {
+      tdNewCols.textContent = '—';
+    }
+
+    // f.name/f.error는 파일명·서버 오류 메시지 기반(악의적 값 가능) — textContent로 삽입
+    const tdStatus = document.createElement('td');
+    const statusSpan = document.createElement('span');
+    if (f.skipped) {
+      statusSpan.className = 'skipped';
+      statusSpan.textContent = `오류: ${f.error || '알 수 없음'}`;
+    } else {
+      statusSpan.style.color = 'var(--green)';
+      statusSpan.textContent = '완료';
+    }
+    tdStatus.appendChild(statusSpan);
+
+    tr.appendChild(tdName);
+    tr.appendChild(tdSheets);
+    tr.appendChild(tdRows);
+    tr.appendChild(tdNewCols);
+    tr.appendChild(tdStatus);
     tbody.appendChild(tr);
   });
 
@@ -2594,6 +3273,172 @@ function mrgReset() {
   document.getElementById('mrg-out-name').value = '';
   document.getElementById('mrg-error').hidden = true;
   document.getElementById('mrg-result-card').hidden = true;
+}
+
+// ── 정보수집 (OSINT) ──────────────────────────────────────────────────────
+let reconJobId = null;
+let reconPollTimer = null;
+
+async function reconStart() {
+  const errEl = document.getElementById('recon-error');
+  errEl.hidden = true;
+
+  const domain = document.getElementById('recon-domain').value.trim();
+  if (!domain) { errEl.textContent = '대상 도메인을 입력하세요.'; errEl.hidden = false; return; }
+
+  const sources = [...document.querySelectorAll('#recon-src-grid input:checked')].map(c => c.value);
+  if (!sources.length) { errEl.textContent = '최소 하나의 수집 소스를 선택하세요.'; errEl.hidden = false; return; }
+
+  const timeout = parseInt(document.getElementById('recon-timeout').value) || 8;
+  const maxSubdomains = parseInt(document.getElementById('recon-max-subdomains').value) || 200;
+
+  document.getElementById('recon-btn').disabled = true;
+  document.getElementById('recon-prog-box').classList.add('show');
+  document.getElementById('recon-result-card').hidden = true;
+  document.getElementById('recon-prog-fill').style.width = '0%';
+  document.getElementById('recon-prog-pct').textContent = '0%';
+
+  try {
+    const res = await fetch('/api/recon/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({domain, sources, timeout, max_subdomains: maxSubdomains}),
+    });
+    const data = await res.json();
+    if (data.error) {
+      errEl.textContent = data.error;
+      errEl.hidden = false;
+      _reconResetUI();
+      return;
+    }
+    reconJobId = data.job_id;
+    _reconPoll(reconJobId);
+  } catch (e) {
+    errEl.textContent = '정보수집 시작 실패: ' + e.message;
+    errEl.hidden = false;
+    _reconResetUI();
+  }
+}
+
+function _reconPoll(jobId) {
+  if (reconPollTimer) clearInterval(reconPollTimer);
+  reconPollTimer = setInterval(async () => {
+    try {
+      const r = await fetch('/api/recon/' + jobId + '/status');
+      const job = await r.json();
+      const pct = job.progress || 0;
+      document.getElementById('recon-prog-fill').style.width = pct + '%';
+      document.getElementById('recon-prog-pct').textContent  = pct + '%';
+
+      if (job.status === 'completed') {
+        clearInterval(reconPollTimer);
+        _reconShowResults(job);
+        _reconResetUI();
+      } else if (job.status === 'cancelled') {
+        clearInterval(reconPollTimer);
+        _reconResetUI();
+      } else if (job.status === 'error') {
+        clearInterval(reconPollTimer);
+        const errEl = document.getElementById('recon-error');
+        errEl.textContent = job.error || '정보수집 중 오류가 발생했습니다.';
+        errEl.hidden = false;
+        _reconResetUI();
+      }
+    } catch (_) {}
+  }, 800);
+}
+
+function reconCancel() {
+  if (!reconJobId) return;
+  fetch('/api/recon/' + reconJobId + '/cancel', { method: 'POST' }).catch(() => {});
+}
+
+function _reconResetUI() {
+  document.getElementById('recon-btn').disabled = false;
+  document.getElementById('recon-prog-box').classList.remove('show');
+}
+
+function _reconShowResults(job) {
+  const result = job.result || {};
+  const meta   = result.meta || {};
+
+  document.getElementById('recon-stat-subs').textContent  = meta.subdomain_total || 0;
+  document.getElementById('recon-stat-alive').textContent = (result.subdomains || []).filter(s => s.alive).length;
+  document.getElementById('recon-stat-certs').textContent = (result.certificates || []).length;
+  document.getElementById('recon-stat-urls').textContent  = (result.archive_urls || []).length;
+  document.getElementById('recon-stat-ports').textContent = Object.keys(result.ports || {}).length;
+
+  // 다운로드 링크 활성화 (API 경로로 href 설정)
+  const btnHtml = document.getElementById('recon-dl-html');
+  if (job.has_html_report) {
+    btnHtml.href = `/api/recon/${job.job_id}/report/html`;
+    btnHtml.classList.remove('disabled');
+  }
+  const btnExcel = document.getElementById('recon-dl-excel');
+  if (job.has_excel_report) {
+    btnExcel.href = `/api/recon/${job.job_id}/report/excel`;
+    btnExcel.classList.remove('disabled');
+  }
+
+  // 소스 조회 실패 경고 (crt.sh/Wayback)
+  const warnEl = document.getElementById('recon-warn');
+  if (result.errors && result.errors.length > 0) {
+    warnEl.textContent = '⚠ ' + result.errors.map(e => `${e.source}: ${e.message}`).join(' / ');
+    warnEl.hidden = false;
+  } else {
+    warnEl.hidden = true;
+  }
+
+  // 서브도메인 표 — 호스트명/발견 소스는 crt.sh·Wayback에서 온 외부 값(악의적 값 가능) — textContent로 삽입
+  const subBody = document.getElementById('recon-sub-body');
+  subBody.innerHTML = '';
+  (result.subdomains || []).forEach(s => {
+    const tr = document.createElement('tr');
+
+    const tdHost = document.createElement('td');
+    tdHost.textContent = s.host;
+
+    const tdAlive = document.createElement('td');
+    tdAlive.textContent = s.alive ? 'LIVE' : '-';
+    tdAlive.style.color = s.alive ? 'var(--green)' : 'var(--dim)';
+
+    const tdSrc = document.createElement('td');
+    tdSrc.textContent = (s.sources || []).join(', ') || '-';
+
+    tr.appendChild(tdHost);
+    tr.appendChild(tdAlive);
+    tr.appendChild(tdSrc);
+    subBody.appendChild(tr);
+  });
+
+  // 포트 표 — IP/호스트명/CVE는 Shodan InternetDB에서 온 외부 값(악의적 값 가능) — textContent로 삽입
+  const portBody = document.getElementById('recon-port-body');
+  portBody.innerHTML = '';
+  Object.keys(result.ports || {}).forEach(ip => {
+    const info = result.ports[ip];
+    const tr = document.createElement('tr');
+
+    const tdIp = document.createElement('td');
+    tdIp.textContent = ip;
+
+    const tdPorts = document.createElement('td');
+    tdPorts.textContent = (info.ports || []).join(', ');
+
+    const tdHosts = document.createElement('td');
+    tdHosts.textContent = (info.hostnames || []).join(', ') || '-';
+
+    const tdVulns = document.createElement('td');
+    tdVulns.textContent = (info.vulns || []).join(', ') || '-';
+    if ((info.vulns || []).length > 0) tdVulns.style.color = 'var(--high)';
+
+    tr.appendChild(tdIp);
+    tr.appendChild(tdPorts);
+    tr.appendChild(tdHosts);
+    tr.appendChild(tdVulns);
+    portBody.appendChild(tr);
+  });
+
+  document.getElementById('recon-result-card').hidden = false;
 }
 
 </script>

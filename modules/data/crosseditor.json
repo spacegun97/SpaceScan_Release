@@ -10,6 +10,8 @@
     {"path": "/crosseditor/dist/",                             "severity": "LOW",    "category": "default_resource"},
     {"path": "/crosseditor/popup/",                            "severity": "LOW",    "category": "default_resource"},
     {"path": "/crosseditor/binary/",                           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/Handler.ashx",               "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/config/",                           "severity": "LOW",    "category": "config_exposure"},
     {"path": "/crosseditor/binary/CrossEditor.js",             "severity": "LOW",    "category": "default_resource"},
     {"path": "/crosseditor/binary/UploadHandler.aspx",         "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/crosseditor/binary/UploadHandler.jsp",          "severity": "MEDIUM", "category": "api_endpoint"},
@@ -25,6 +27,19 @@
     {"path": "/crosseditor/sample/sample.jsp",                 "severity": "LOW",    "category": "sample_app"},
     {"path": "/crosseditor/sample/sample.asp",                 "severity": "LOW",    "category": "sample_app"},
     {"path": "/crosseditor/sample/sample.aspx",                "severity": "LOW",    "category": "sample_app"},
-    {"path": "/crosseditor/sample/sample.php",                 "severity": "LOW",    "category": "sample_app"}
+    {"path": "/crosseditor/sample/sample.php",                 "severity": "LOW",    "category": "sample_app"},
+    {"path": "/crosseditor/skin/",                             "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/lang/",                             "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/plugin/",                           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor/binary/DownloadHandler.aspx",       "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/DownloadHandler.jsp",        "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/DownloadHandler.php",        "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/FileDown.aspx",              "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/FileDown.jsp",               "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/FileDown.php",               "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/ne/binary/",                                    "severity": "LOW",    "category": "default_resource"},
+    {"path": "/namo/binary/",                                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/crosseditor2/",                                 "severity": "LOW",    "category": "default_resource"},
+    {"path": "/CrossEditor5/",                                 "severity": "LOW",    "category": "default_resource"}
   ]
 }

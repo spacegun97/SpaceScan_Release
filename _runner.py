@@ -22,18 +22,24 @@ def build_module_extra(key: str,
                        max_pages: Optional[int] = None,
                        progress_cb: Optional[Callable[[int, int], None]] = None,
                        render: bool = False,
-                       stop_event: Optional["threading.Event"] = None
+                       stop_event: Optional["threading.Event"] = None,
+                       backend_filter: bool = True,
+                       backends: Optional[List[str]] = None
                        ) -> Dict[str, Any]:
     """모듈 키별로 scan()에 전달할 추가 파라미터 dict를 구성한다.
 
-    - default_pages: stacks (사전 탐지 결과)
+    - default_pages: stacks (사전 탐지 결과), backend_filter (백엔드 확장자 필터 토글),
+      backends (사용자가 직접 선택한 백엔드 언어 패밀리 — 필터 허용셋에 합산)
     - directory_listing / sql_injection / path_traversal: max_pages, render (크롤링 한계·렌더 옵션)
     - 위 4개 모듈: progress_cb (하위 진행률 콜백)
     - 전체 모듈: stop_event ([중단] 시 요청 루프 즉시 탈출용)
     """
     extra: Dict[str, Any] = {}
-    if key == "default_pages" and stacks is not None:
-        extra["stacks"] = stacks
+    if key == "default_pages":
+        if stacks is not None:
+            extra["stacks"] = stacks
+        extra["backend_filter"] = backend_filter
+        extra["backends"] = backends or []
     if key in ("directory_listing", "sql_injection", "path_traversal"):
         if max_pages is not None:
             extra["max_pages"] = max_pages

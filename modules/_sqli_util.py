@@ -154,7 +154,20 @@ _SCRIPT_BLOCK_RE = re.compile(
 # JS 내 URL 호출 패턴 — 각 패턴은 URL 부분을 그룹 1로 캡처한다.
 # 백틱(`) 템플릿 리터럴은 의도적으로 제외 — 동적 치환값의 모호성으로 인한
 # 오탐 및 외부 도메인 유출 리스크 차단.
-_JS_URL_PATTERNS = _crawl._JS_LINK_PATTERNS  # _crawl과 동일 패턴 — 단일 소스 유지
+# _crawl._JS_LINK_PATTERNS는 링크 발견(큐 확장)용으로 백틱을 포함하므로
+# 여기서는 실제 입력 포인트(payload 전송 대상)를 구성하는 목적에 맞게 별도 정의한다.
+_JS_URL_PATTERNS: List[re.Pattern] = [
+    re.compile(r"""\bfetch\s*\(\s*["']([^"']+)["']""", re.IGNORECASE),
+    re.compile(r"""\.open\s*\(\s*["']\w+["']\s*,\s*["']([^"']+)["']""", re.IGNORECASE),
+    re.compile(r"""\$\.(?:get|post|ajax)\s*\(\s*["']([^"']+)["']""", re.IGNORECASE),
+    re.compile(r"""\$\.ajax\s*\(\s*\{[^}]*?url\s*:\s*["']([^"']+)["']""",
+               re.IGNORECASE | re.DOTALL),
+    re.compile(r"""axios\.(?:get|post|put|delete|patch)\s*\(\s*["']([^"']+)["']""",
+               re.IGNORECASE),
+    re.compile(r"""window\.open\s*\(\s*["']([^"']+)["']""", re.IGNORECASE),
+    re.compile(r"""location\.(?:href|replace|assign)\s*(?:=|\()\s*["']([^"']+)["']""",
+               re.IGNORECASE),
+]
 
 # POST 바디 탐지 패턴 — group(1)=URL, 패턴 끝이 '{' 직후 위치.
 # _parse_js_urls에서 _extract_brace_content로 완전한 객체를 추출한다 (P5: 중괄호 균형).
@@ -276,7 +289,7 @@ def _parse_js_urls(body: str, page_url: str,
     for raw in url_candidates:
         abs_url, _ = urldefrag(urljoin(page_url, raw))
         parsed = urlparse(abs_url)
-        if parsed.netloc != base_netloc or _crawl._is_logout_path(parsed.path):
+        if not _crawl._same_site(parsed.netloc, base_netloc) or _crawl._is_logout_path(parsed.path):
             continue
         qs = parse_qs(parsed.query, keep_blank_values=True)
         if not qs:
@@ -306,7 +319,7 @@ def _parse_js_urls(body: str, page_url: str,
                 raw_url = m.group(1)
                 abs_url, _ = urldefrag(urljoin(page_url, raw_url))
                 parsed = urlparse(abs_url)
-                if parsed.netloc != base_netloc or _crawl._is_logout_path(parsed.path):
+                if not _crawl._same_site(parsed.netloc, base_netloc) or _crawl._is_logout_path(parsed.path):
                     continue
                 keys = [k for k in _JS_OBJ_KEY_RE.findall(obj_body)
                         if k.lower() not in ("true", "false", "null")]
@@ -338,7 +351,7 @@ def _parse_js_urls(body: str, page_url: str,
             raw_url = xhr_m.group(1)
             abs_url, _ = urldefrag(urljoin(page_url, raw_url))
             parsed = urlparse(abs_url)
-            if parsed.netloc != base_netloc or _crawl._is_logout_path(parsed.path):
+            if not _crawl._same_site(parsed.netloc, base_netloc) or _crawl._is_logout_path(parsed.path):
                 continue
             keys = [k for k in _JS_OBJ_KEY_RE.findall(obj_body)
                     if k.lower() not in ("true", "false", "null")]
@@ -408,7 +421,7 @@ def parse_input_points(page_url: str, body: str,
                     try:
                         abs_url, _ = urldefrag(urljoin(page_url, obj))
                         parsed_u = urlparse(abs_url)
-                        if parsed_u.netloc != base_netloc:
+                        if not _crawl._same_site(parsed_u.netloc, base_netloc):
                             return
                         if _crawl._is_logout_path(parsed_u.path):
                             return
@@ -441,7 +454,7 @@ def parse_input_points(page_url: str, body: str,
         href = _html_unescape(href_match.group(1))
         abs_url, _ = urldefrag(urljoin(page_url, href))
         # 외부 도메인 링크는 제외
-        if urlparse(abs_url).netloc != base_netloc:
+        if not _crawl._same_site(urlparse(abs_url).netloc, base_netloc):
             continue
         # 로그아웃 경로는 세션 파기 방지를 위해 제외
         if _crawl._is_logout_path(urlparse(abs_url).path):
@@ -505,7 +518,7 @@ def parse_input_points(page_url: str, body: str,
         action_url = urljoin(page_url, raw_action)
 
         # action URL이 다른 도메인이면 스킵
-        if urlparse(action_url).netloc != base_netloc:
+        if not _crawl._same_site(urlparse(action_url).netloc, base_netloc):
             continue
         # 로그아웃 경로의 폼은 세션 파기 방지를 위해 제외
         if _crawl._is_logout_path(urlparse(action_url).path):
@@ -570,7 +583,7 @@ def parse_input_points(page_url: str, body: str,
         attr_val = _html_unescape(data_match.group(2))
         abs_url, _ = urldefrag(urljoin(page_url, attr_val))
         # 외부 도메인 URL은 제외
-        if urlparse(abs_url).netloc != base_netloc:
+        if not _crawl._same_site(urlparse(abs_url).netloc, base_netloc):
             continue
         # 로그아웃 경로는 세션 파기 방지를 위해 제외
         if _crawl._is_logout_path(urlparse(abs_url).path):

@@ -24,11 +24,11 @@ hidden 필드는 수집하되, CSRF/보안 토큰 성격 필드는 제외한다.
 제외 대상: `csrf`, `token`, `nonce`, `_token`, `authenticity_token`, `__requestverificationtoken`, `csrfmiddlewaretoken`, `__viewstate`, `__viewstategenerator`, `javax.faces.viewstate`, `hp_field`, `honeypot`
 
 **도메인 경계 (3중 방어):**  
-공격 요청이 대상 외 도메인으로 전송되지 않도록 세 단계로 검증한다.
-1. **수집 단계** — `<a href>`, `<form action>`, `data-*` 속성, JS 호출 URL(`fetch` 등)에서 추출한 URL에 `netloc == base_netloc` 검증 적용 후 등록. URI path 주입 포인트는 크롤링된 페이지의 URL을 그대로 사용하므로 크롤러 단계의 netloc 검증이 적용된 상태
-2. **공격 루프 진입 전 (Phase 2.5)** — 수집이 끝난 `input_points` 전체를 `netloc == base_netloc` 기준으로 재필터링
-3. **요청 직전 (`_request()` 사전 검증)** — 요청 URL의 netloc이 `base_netloc`과 다르면 `ValueError`를 발생시켜 요청 자체를 중단. 호출부의 `except`가 해당 요청을 조용히 스킵한다
-4. **요청 직후 (`_request()` 사후 검증)** — 리다이렉트로 외부 도메인으로 이탈한 경우 차단하여 세션 쿠키 유출 방지
+공격 요청이 대상 외 도메인으로 전송되지 않도록 세 단계로 검증한다. 동일 사이트 판정은 `_crawl._same_site()`를 사용하며, 호스트 대소문자를 무시하고 선행 `www.` 유무 한 단계 차이(`example.com` ↔ `www.example.com`)까지 동일 사이트로 취급한다(포트·그 외 서브도메인은 구분).
+1. **수집 단계** — `<a href>`, `<form action>`, `data-*` 속성, JS 호출 URL(`fetch` 등)에서 추출한 URL에 `_crawl._same_site()` 검증 적용 후 등록. URI path 주입 포인트는 크롤링된 페이지의 URL을 그대로 사용하므로 크롤러 단계의 동일 사이트 검증이 적용된 상태
+2. **공격 루프 진입 전 (Phase 2.5)** — 수집이 끝난 `input_points` 전체를 `_crawl._same_site()` 기준으로 재필터링
+3. **요청 직전 (`_request()` 사전 검증)** — 요청 URL이 `_crawl._same_site()`로 `base_netloc`과 동일 사이트가 아니면 `ValueError`를 발생시켜 요청 자체를 중단. 호출부의 `except`가 해당 요청을 조용히 스킵한다
+4. **요청 직후 (`_request()` 사후 검증)** — 리다이렉트로 동일 사이트를 벗어난 경우 차단하여 세션 쿠키 유출 방지
 
 **로그아웃 경로 제외:**  
 세션 파기 방지를 위해 다음 두 단계에서 로그아웃 성격 경로(`logout`/`log-out`/`signout`/`sign-out`)를 자동 제외한다.
@@ -63,9 +63,10 @@ Phase 1에서 식별된 DBMS를 기준으로 해당 DBMS 전용 에러 유발 �
 | Oracle | `AND 1=CTXSYS.DRITHSX.SN(1,(SELECT '__MARKER__' FROM dual))` |
 | SQLite | `AND 1=LIKELIHOOD((SELECT 1),1) AND '__MARKER__'='__MARKER__'` |
 
-**WAF 사전 체크:** 입력 포인트 진입 시 첫 번째 파라미터에 `'`를 주입하여 응답을 확인한다.
-- hidden이 아닌 가시 필드를 우선 사용 — CSRF 검증 실패로 인한 오판 방지
-- 응답 본문에 `access denied` / `blocked` / `forbidden` 감지 시 해당 입력 포인트 전체 스킵
+**WAF baseline 캡처 및 사전 체크:** 입력 포인트 진입 시 페이로드 없는 원본 요청을 1회 전송하여(`_capture_waf_baseline()`) 응답 본문에 자연 발생하는 WAF_KEYWORDS를 `baseline_kws`로 캡처한다. 이후 Error/Boolean-based/Inline Query 세 기법 모두 `_is_waf_blocked()` 판정 시 `baseline_kws`에 포함된 키워드는 제외한다 — 원본 페이지 자체에 `syntax`·`warning` 등의 단어가 포함된 경우 모든 응답이 오탐으로 WAF 차단 처리되어 해당 입력 포인트 전체가 스킵되는 것을 방지한다.
+
+Error-based 첫 페이로드(`'`)는 hidden이 아닌 가시 필드를 우선 사용한다 — CSRF 검증 실패로 인한 오판 방지.
+- 응답 본문에 `access denied` / `blocked` / `forbidden` 등 WAF_KEYWORDS 감지 시(baseline_kws 제외) 해당 입력 포인트 전체 스킵
 - 403 단독으로는 WAF로 판정하지 않음 (CSRF 검증 실패 응답과 구별)
 - 차단이 아닌 경우, 이 응답을 첫 번째 페이로드 결과로 재사용 (추가 요청 없음)
 
@@ -203,4 +204,4 @@ Error-based에서 이미 취약으로 확인된 파라미터는 중복 finding �
 | `stop_event` | Event \| None | None | [중단] 신호. set 시 크롤·입력 포인트 스캔의 요청 직전·딜레이 대기에서 `wait_or_cancel()`이 `ScanCancelled`를 던져 즉시 중단. `_run_scan()`이 주입 |
 
 **리다이렉트 도메인 검증:**  
-`_request` 내부에서 응답의 최종 URL(`resp.url`)을 `base_netloc`과 비교한다. 외부 도메인으로 리다이렉트된 경우 `ValueError`를 발생시켜 해당 요청 결과를 무시한다. 세션 쿠키가 외부 도메인으로 전송되는 것을 방지한다.
+`_request` 내부에서 응답의 최종 URL(`resp.url`)을 `_crawl._same_site()`로 `base_netloc`과 비교한다. 동일 사이트(`www.` 유무·대소문자 차이는 동일 취급)를 벗어난 경우 `ValueError`를 발생시켜 해당 요청 결과를 무시한다. 세션 쿠키가 외부 도메인으로 전송되는 것을 방지한다.

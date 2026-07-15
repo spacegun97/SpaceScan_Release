@@ -12,8 +12,17 @@
     {"path": "/wp-config.php.bak",             "severity": "MEDIUM", "category": "sensitive_file"},
     {"path": "/wp-config.php~",                "severity": "MEDIUM", "category": "sensitive_file"},
     {"path": "/wp-config.php.old",             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-config.php.save",            "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-config.php.swp",             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-config.php.dist",            "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/wp-config-sample.php",          "severity": "LOW",    "category": "config_exposure"},
     {"path": "/wp-content/debug.log",          "severity": "MEDIUM", "category": "sensitive_file"},
     {"path": "/wp-content/uploads/",           "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/wp-admin/install.php",          "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/setup-config.php",     "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/maint/repair.php",     "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/?rest_route=/wp/v2/users",      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-includes/wlwmanifest.xml",   "severity": "LOW",    "category": "default_resource"},
     {"path": "/wp-includes/",                  "severity": "LOW",    "category": "default_resource"},
     {"path": "/readme.html",                   "severity": "LOW",    "category": "config_exposure"},
     {"path": "/readme.txt",                    "severity": "LOW",    "category": "config_exposure"},
@@ -23,6 +32,7 @@
     {"path": "/wp-signup.php",                 "severity": "LOW",    "category": "default_resource"},
     {"path": "/wp-activate.php",               "severity": "LOW",    "category": "default_resource"},
     {"path": "/.htaccess",                     "severity": "MEDIUM", "category": "sensitive_file"},
-    {"path": "/wp-content/",                   "severity": "LOW",    "category": "default_resource"}
+    {"path": "/wp-content/",                   "severity": "LOW",    "category": "default_resource"},
+    {"path": "/wp-json/wooconvo/v1/download-file?order_id=1&filename=", "severity": "MEDIUM", "category": "api_endpoint"}
   ]
 }

@@ -11,10 +11,10 @@
 
 1. BFS 시작 전 `robots.txt`와 `sitemap.xml`에서 같은 도메인 URL을 추가 시드로 수집한다. `robots.txt`의 Disallow/Allow 지시자는 발견 힌트로만 사용하며 차단 규칙을 따르지 않는다. `sitemap.xml`은 `<sitemapindex>`가 감지되면 하위 sitemap URL을 재귀 조회한다(깊이 3, 자식 20개 상한).
 2. 입력 URL + 시드를 큐에 넣고 BFS 방식으로 같은 도메인 내 URL을 방문한다.
-3. 응답 분류는 HTTP 상태 코드와 무관하므로 403·404 등 비200 응답도 CT·본문 스니핑 결과에 따라 파싱된다. HTML 응답에서는 `href`/`src`/`action`(따옴표·미따옴표), `data-url`/`data-href`/`data-action`/`data-src`, `srcset`, `<meta http-equiv="refresh">` url= 값을 추출하고, 스크립트 응답에서는 `fetch`/`axios` 등 JS 호출 URL을 추출해 큐에 추가한다.
-4. `allow_redirects=True`로 요청하고, 리다이렉트 후 최종 URL의 도메인이 다르면 해당 페이지를 결과에서 제외한다.
+3. 응답 분류는 HTTP 상태 코드와 무관하므로 403·404 등 비200 응답도 CT·본문 스니핑 결과에 따라 파싱된다. HTML 응답에서는 `href`/`src`/`action`(따옴표·미따옴표, 등호 앞뒤 공백 허용), `data-url`/`data-href`/`data-action`/`data-src`, `srcset`, `<meta http-equiv="refresh">` url= 값, GET `<form>`(action + 필드명 조합 쿼리 URL, POST 폼 제외)을 추출하고, 스크립트 응답에서는 `fetch`/`axios` 등 JS 호출 URL(백틱 템플릿 리터럴 포함)을 추출해 큐에 추가한다.
+4. `allow_redirects=True`로 요청하고, 리다이렉트 후 최종 URL이 동일 사이트(`www.` 유무·대소문자 차이는 동일 취급)를 벗어나면 해당 페이지를 결과에서 제외한다.
 5. 인증 세션 파기 방지를 위해 로그아웃 성격 경로(`logout`/`log-out`/`signout`/`sign-out`)는 큐 추가 단계에서 자동 제외한다.
-6. 동일 서명(path + 쿼리 파라미터명 집합)의 URL은 최대 3회까지만 방문하여 페이지네이션 트랩을 방지한다. 요청 실패 시 `Timeout`·`ChunkedEncodingError`에 한해 최대 2회 재시도한다.
+6. 동일 서명(path + 쿼리 파라미터명 집합)의 URL은 최대 3회까지만 방문하여 값만 변하는 URL의 반복 트랩을 방지한다. 단, 파라미터명이 페이지네이션 성격(`page`/`p`/`offset` 등)이면 상한을 적용하지 않아 `max_pages` 한도 내에서 계속 발견된다. 요청 실패 시 `Timeout`·`ChunkedEncodingError`에 한해 최대 2회 재시도한다.
 7. 방문 횟수가 `max_pages`에 도달하면 크롤링을 종료한다 (기본값 100, 범위 10~30000).
 
 ### Phase 2 — 디렉토리 리스팅 확인

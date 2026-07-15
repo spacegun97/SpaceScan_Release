@@ -22,7 +22,7 @@ def _ensure_deps():
         import subprocess
         print(f"[*] 패키지 설치 중: {', '.join(missing)}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet"] + missing)
-        print("[✓] 설치 완료\n")
+        print("[OK] 설치 완료\n")
 
 _ensure_deps()
 
@@ -148,7 +148,9 @@ def _render_exposed_files(exposed_files: list, total_files: int) -> str:
 def _render_finding_row(f: Dict[str, Any]) -> str:
     """단일 finding을 HTML <tr> 한 줄로 변환한다."""
     sev  = f.get("severity", "INFO")
-    name = f.get("header") or f.get("method") or f.get("path") or f.get("param") or f.get("url") or "-"
+    name = html_module.escape(str(
+        f.get("header") or f.get("method") or f.get("path") or f.get("param") or f.get("url") or "-"
+    ))
 
     # evidence를 HTML 이스케이프 처리하여 <style>, <script> 등 태그가
     # 브라우저에 의해 실제 HTML로 파싱되는 것을 방지
@@ -206,9 +208,9 @@ def _render_finding_row(f: Dict[str, Any]) -> str:
     return (
         f'<tr>'
         f'<td><span class="badge" style="background:{_SEV_BG.get(sev, "#1e293b")}">{sev}</span></td>'
-        f'<td style="color:#4a607a;font-size:12px">{f.get("_module", "-")}</td>'
+        f'<td style="color:#4a607a;font-size:12px">{html_module.escape(str(f.get("_module", "-")))}</td>'
         f'<td style="font-family:monospace;font-size:12px;color:#60a5fa">{name}</td>'
-        f'<td style="font-size:12px">{f.get("description", "-")}</td>'
+        f'<td style="font-size:12px">{html_module.escape(str(f.get("description", "-")))}</td>'
         f'<td>{evid_cell}</td>'
         f'</tr>'
     )
@@ -322,7 +324,7 @@ def _ensure_extract_deps() -> None:
         print("  [*] openpyxl 설치 중...")
         subprocess.check_call([sys.executable, "-m", "pip", "install",
                                "--quiet", "openpyxl"])
-        print("  [✓] openpyxl 설치 완료\n")
+        print("  [OK] openpyxl 설치 완료\n")
 
 
 _RENDER_READY: object = None   # 프로세스 1회 캐시 — 모듈 3개 중복 subprocess 방지
@@ -347,7 +349,7 @@ def _ensure_render_deps() -> bool:
                 import subprocess as _sp
                 print("  [*] playwright 설치 중...")
                 _sp.check_call([sys.executable, "-m", "pip", "install", "--quiet", "playwright"])
-                print("  [✓] playwright 설치 완료")
+                print("  [OK] playwright 설치 완료")
             # chromium 바이너리 설치 (이미 캐시돼 있으면 수초 내 완료)
             import subprocess as _sp
             _sp.check_call(
@@ -374,7 +376,24 @@ def _ensure_merge_deps() -> None:
         print(f"  [*] {', '.join(missing)} 설치 중...")
         subprocess.check_call([sys.executable, "-m", "pip", "install",
                                "--quiet"] + missing)
-        print(f"  [✓] {', '.join(missing)} 설치 완료\n")
+        print(f"  [OK] {', '.join(missing)} 설치 완료\n")
+
+
+def _ensure_recon_deps() -> None:
+    """정보수집(OSINT) 모드 진입 시점에 dnspython + openpyxl을 lazy 설치한다.
+
+    dnspython의 import명은 'dns'이나 pip 패키지명은 'dnspython'이므로 매핑한다.
+    """
+    import importlib.util
+    pkg_map = {"dns": "dnspython", "openpyxl": "openpyxl"}
+    missing = [pkg_map[mod] for mod in ("dns", "openpyxl")
+               if importlib.util.find_spec(mod) is None]
+    if missing:
+        import subprocess
+        print(f"  [*] {', '.join(missing)} 설치 중...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install",
+                               "--quiet"] + missing)
+        print(f"  [OK] {', '.join(missing)} 설치 완료\n")
 
 
 def _estimate_dump(ctx, total_rows: int) -> Dict[str, float]:

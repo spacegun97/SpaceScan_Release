@@ -3,8 +3,12 @@
     {"path": "/_vti_bin/",                             "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/_vti_bin/_vti_aut/author.dll",          "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/_vti_bin/_vti_adm/admin.dll",           "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/_vti_bin/_vti_aut/dvwssr.dll",          "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/_vti_bin/shtml.dll",                    "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/_vti_bin/fpcount.exe",                  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/_vti_pvt/service.pwd",                  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/_vti_pvt/administrators.pwd",           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/_vti_pvt/authors.pwd",                  "severity": "MEDIUM", "category": "sensitive_file"},
     {"path": "/trace.axd",                             "severity": "MEDIUM", "category": "debug_endpoint"},
     {"path": "/elmah.axd",                             "severity": "MEDIUM", "category": "debug_endpoint"},
     {"path": "/glimpse.axd",                           "severity": "MEDIUM", "category": "debug_endpoint"},
@@ -25,6 +29,11 @@
     {"path": "/umbraco/",                              "severity": "MEDIUM", "category": "admin_console"},
     {"path": "/umbraco/backoffice/",                   "severity": "MEDIUM", "category": "admin_console"},
     {"path": "/kentico/",                              "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/msadc/msadcs.dll",                      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/certsrv/",                              "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/iisadmin/",                             "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/iissamples/",                           "severity": "LOW",    "category": "sample_app"},
+    {"path": "/scripts/",                              "severity": "LOW",    "category": "default_resource"},
     {"path": "/iisstart.htm",                          "severity": "LOW",    "category": "default_resource"},
     {"path": "/iisstart.png",                          "severity": "LOW",    "category": "default_resource"},
     {"path": "/aspnet_client/",                        "severity": "LOW",    "category": "default_resource"},
@@ -34,12 +43,6 @@
     {"path": "/default.aspx",                          "severity": "LOW",    "category": "default_resource"},
     {"path": "/ScriptResource.axd",                    "severity": "LOW",    "category": "default_resource"},
     {"path": "/WebResource.axd",                       "severity": "LOW",    "category": "default_resource"},
-    {"path": "/.git/",                                 "severity": "LOW",    "category": "sensitive_file"},
-    {"path": "/.git/config",                           "severity": "LOW",    "category": "sensitive_file"},
-    {"path": "/.env",                                  "severity": "LOW",    "category": "sensitive_file"},
-    {"path": "/app_offline.htm",                       "severity": "LOW",    "category": "default_resource"},
-    {"path": "/robots.txt",                            "severity": "LOW",    "category": "config_exposure"},
-    {"path": "/sitemap.xml",                           "severity": "LOW",    "category": "config_exposure"},
-    {"path": "/crossdomain.xml",                       "severity": "LOW",    "category": "config_exposure"}
+    {"path": "/app_offline.htm",                       "severity": "LOW",    "category": "default_resource"}
   ]
 }

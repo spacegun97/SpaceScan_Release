@@ -19,7 +19,8 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
 │  ├─ "스캔" 탭             │                             │
 │  ├─ "스캔 히스토리"       │                             │
 │  ├─ "데이터 추출 (SQLi)"  │                             │
-│  └─ "엑셀 취합"           │                             │
+│  ├─ "엑셀 취합"           │                             │
+│  └─ "정보수집 (OSINT)"    │                             │
 └──────────────┬────────────┴──────────────────────────────┘
                │ 공유 유틸: _core.py
                │   ├── normalize_url / calculate_risk
@@ -27,6 +28,7 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
                │   ├── parse_cookie_string / SPEED_DELAY / EXTRACT_SPEED_DELAY
                │   ├── _ensure_extract_deps / _estimate_dump
                │   ├── _ensure_merge_deps
+               │   ├── _ensure_recon_deps  (dnspython + openpyxl lazy 설치)
                │   └── _ensure_render_deps  (Playwright lazy 설치)
                │ 공용 헬퍼: _runner.py
                │   ├── build_module_extra() — 모듈별 추가 파라미터 dict 구성
@@ -37,12 +39,13 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
 │   ├── _crawl.py             BFS 크롤러 공통 유틸          │
 │   ├── _cancel.py            협조적 중단 헬퍼 (utility)    │
 │   ├── directory_listing.py  디렉터리 리스팅 탐지         │
-│   ├── default_pages.py      WEB/WAS/Application 기본·샘플 페이지 탐지│
+│   ├── default_pages.py      WEB/WAS/Application/Framework 기본·샘플 페이지 탐지│
 │   ├── sql_injection.py      SQL 인젝션 탐지              │
 │   ├── _sqli_util.py         SQLi 공통 상수·헬퍼 (utility)│
 │   ├── path_traversal.py     Path Traversal 탐지          │
 │   ├── sqli_extract.py       SQLi 데이터 추출 (별도 모드) │
-│   └── excel_merge.py        엑셀 취합 (별도 모드)         │
+│   ├── excel_merge.py        엑셀 취합 (별도 모드)         │
+│   └── recon.py              정보수집 OSINT (별도 모드, 순수 패시브)│
 └──────────────┬──────────────────────────────────────────┘
                │
 ┌──────────────▼──────────────────────────────────────────┐
@@ -53,8 +56,14 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
 │   reports/extract_<name>_DBfingerprint.xlsx              │
 │   reports/extract_<name>_<db>.xlsx                       │
 │         (SQLi 추출 모드 — 고정 이름, 동일 이름 덮어쓰기)  │
+│   reports/search(<대상>-<검색어>)_<name>_DBfingerprint.xlsx│
+│   reports/search(<대상>-<검색어>)_<name>_<db>.xlsx       │
+│         (특수 검색모드 — 일반 추출과 완전히 격리된 파일)  │
 │   reports/merge_<name>_<timestamp>.xlsx                  │
 │         (엑셀 취합 모드에서만 생성)                       │
+│   reports/recon_<domain>_<timestamp>.html                │
+│   reports/recon_<domain>_<timestamp>.xlsx                │
+│         (정보수집 OSINT 모드에서만 생성)                  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -105,6 +114,8 @@ REST API 엔드포인트:
   - `proxy_host`: 프록시 호스트 문자열 (선택, 미지정 시 미사용)
   - `proxy_port`: 프록시 포트 정수 (선택. 지정 시 `proxy_host` 기본값 `127.0.0.1`로 프록시 활성화)
   - `default_pages_stacks`: Default Pages 추가 점검 스택 배열 (선택, 기본값 `[]`). `TECH_REGISTRY`에 정의된 유효 스택명만 허용되며, 자동 탐지 결과와 합집합으로 최종 점검 대상 구성
+  - `backend_filter`: 백엔드 확장자 필터 boolean (선택, 기본값 `true`). `default_pages` 모듈 전용. 감지된 스택 ∪ `default_pages_backends`로 선택한 언어와 다른 백엔드 실행 확장자(`.jsp`/`.php`/`.aspx` 등) 경로를 점검에서 제외한다. 언어 패밀리가 하나도 확정되지 않으면(예: Apache만 감지 + 사용자 선택 없음) 자동으로 전량 프로빙
+  - `default_pages_backends`: Default Pages 백엔드 확장자 필터용 사용자 선택 언어 패밀리 배열 (선택, 기본값 `[]`). `BACKEND_FAMILIES`(`java`/`dotnet`/`php`)에 정의된 값만 허용되며, 감지된 스택의 언어 패밀리와 합집합으로 필터 허용셋을 구성한다. Apache/Nginx/에디터류 등 언어를 확정하지 못하는 스택만 감지된 경우에도 사용자가 직접 지정해 필터를 강제 활성화할 수 있다
   - `render`: JS 렌더링 활성화 boolean (선택, 기본값 `false`). `true`이면 크롤링 모듈이 Playwright Chromium으로 렌더링 + 네트워크 인터셉션을 수행한다. `default_pages`에는 전달되지 않는다.
 - `GET /api/scan/<id>/status` — 진행 상태 폴링 (0~100%). 하위 진행률은 `directory_listing` / `sql_injection` / `default_pages` / `path_traversal` 모듈에서 `progress_cb`를 통해 세밀하게 갱신된다
 - `GET /api/scans` — 히스토리 목록
@@ -116,7 +127,7 @@ REST API 엔드포인트:
 
 스캔 작업은 `scan_jobs` dict에 인메모리 저장 (재시작 시 초기화). 장시간 스캔은 백그라운드 스레드로 처리.
 
-`_run_scan()` 내부 스캔 루프 진입 전, `default_pages` 모듈이 포함된 경우 `_detect_stacks()`를 사전 호출한다. 탐지 결과와 `default_pages_stacks`로 전달된 사용자 선택 스택을 합집합으로 구성하여 `stacks` 파라미터로 전달한다. `TECH_REGISTRY`에 없는 스택명은 합산 시 필터링된다.
+`_run_scan()` 내부 스캔 루프 진입 전, `default_pages` 모듈이 포함된 경우 `_detect_stacks()`를 사전 호출한다. 탐지 결과와 `default_pages_stacks`로 전달된 사용자 선택 스택을 합집합으로 구성하여 `stacks` 파라미터로 전달한다. `TECH_REGISTRY`에 없는 스택명은 합산 시 필터링된다. `default_pages_backends`로 전달된 사용자 선택 언어도 `BACKEND_FAMILIES`에 없는 값은 필터링되어 `backends` 파라미터로 전달된다.
 
 `_run_scan()`은 모듈 실행 시 `_runner.build_module_extra()` / `_runner.run_single_module()`을 사용한다. 다만 취소 체크와 진행률 콜백 주입은 대시보드 전용 책임이므로 `_run_scan()` 측에서 처리한다.
 
@@ -127,7 +138,7 @@ REST API 엔드포인트:
 **job_dict 구조**
 ```python
 {
-    "job_id":         str,         # scan_YYYYMMDD_HHMMSS_XXXX
+    "job_id":         str,         # scan_YYYYMMDD_HHMMSS_<6자리 hex>(secrets.token_hex(3), 불투명 랜덤 식별자)
     "target":         str,
     "modules":        list[str],
     "status":          str,          # pending / running / paused / completed / cancelled
@@ -149,11 +160,12 @@ REST API 엔드포인트:
 ### 3-3. `dashboard/dashboard.html` — 프론트엔드 SPA
 
 - 다크 테마, CSS 변수 시스템
-- 사이드바 4개 페이지: 스캔 실행 / 스캔 히스토리 / 데이터 추출 (SQLi) / 엑셀 취합
+- 사이드바 5개 페이지 (3개 그룹): SCAN(정보수집 OSINT / 스캔 실행 / 스캔 히스토리) · EXPLOIT(데이터 추출 SQLi) · UTILITY(엑셀 취합)
 - 스캔 실행 페이지: URL / Timeout / 모듈 토글, 진행률 800ms 폴링, findings 아코디언
 - 히스토리 페이지: 과거 스캔 목록 테이블
 - 데이터 추출 (SQLi) 페이지: 입력 폼 + fingerprint + 추출 마법사 (별도 모드, §5 참고)
 - 엑셀 취합 페이지: 다중 파일 업로드 + 스키마 합집합 병합 (별도 모드, §6 참고)
+- 정보수집 (OSINT) 페이지: 도메인 입력 + 소스 토글 + 진행률 800ms 폴링 + 결과 테이블/리포트 다운로드 (별도 모드, §7 참고)
 
 ---
 
@@ -192,21 +204,25 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          stacks: List[str] = None, cookies: dict = None,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: dict = None,
-         auth_headers: dict = None) -> Dict[str, Any]:
+         auth_headers: dict = None,
+         backend_filter: bool = True,
+         backends: List[str] = None) -> Dict[str, Any]:
 ```
 - `stacks`: 사전 탐지된 기술 스택 목록. 값이 전달되면 내부 `_detect_stacks()` 호출을 건너뛴다.
+- `backend_filter`: 백엔드 확장자 필터 (기본 `True`). 감지된 스택의 언어 패밀리(`STACK_BACKEND`: Tomcat 등 → `java` / IIS·ASPNET → `dotnet` / PHP·WordPress 등 → `php`) ∪ `backends`로 전달된 사용자 선택 언어와 다른 백엔드 실행 확장자(`BACKEND_EXT`: `.jsp`/`.php`/`.aspx` 등) 경로를 제외한다. 정적·스택 무관 확장자는 항상 프로빙되며, 허용 언어 집합이 하나도 확정되지 않으면 필터를 적용하지 않고 전량 프로빙한다(recall 우선 안전장치).
+- `backends`: 사용자가 직접 선택한 백엔드 언어 패밀리 목록 (`BACKEND_FAMILIES = {"java", "dotnet", "php"}`에 없는 값은 무시). 자동 탐지가 언어를 확정하지 못하는 스택(Apache/Nginx/에디터류 등)만 감지된 경우에도, 사용자가 언어를 지정하면 그 언어 기준으로 `backend_filter`가 강제 활성화된다.
 - `stop_event` (4개 스캔 모듈 공통, 선택): `threading.Event`. `_run_scan()`이 `build_module_extra()`로 주입하며, set되면 각 모듈의 요청 직전·딜레이 대기 지점에서 `wait_or_cancel()`이 `ScanCancelled`를 던져 즉시 중단된다. 자세한 흐름은 섹션 3-1 '즉시 중단' 참조.
 
 **공통 크롤러(`modules/_crawl.py`) 동작:**
 - BFS 시작 전 `robots.txt`와 `sitemap.xml`을 조회하여 같은 도메인 URL을 추가 시드로 큐에 선투입한다. `robots.txt`의 Disallow/Allow/Sitemap 지시자는 발견 힌트로만 활용하며 차단 규칙을 따르지 않는다. `sitemap.xml`은 `<sitemapindex>`가 감지되면 하위 sitemap URL을 재귀 조회한다(깊이 3, 자식 20개 상한).
-- 응답을 `html` / `script` / `other` 세 종류로 분류한다. `text/html` 또는 `application/xhtml+xml` CT이면 `html`, `javascript`/`ecmascript` CT 또는 `.js` URL이면 `script`, CT가 없거나 `text/plain`이면 응답 본문 첫 500자를 스니핑(`<!doctype html`·`<html`·`<?xml` 접두어)하여 `html`로 승격, 그 외는 `other`. 분류는 HTTP 상태 코드와 무관하게 적용되어 403·404 등 비200 응답도 분류 결과에 따라 본문이 파싱된다. `html`·`script`는 본문을 보관하고 링크·입력 포인트 추출 대상이 된다. `other`는 경로 수집용으로만 기록한다.
-- HTML 본문에서 링크를 추출하는 소스: 따옴표·미따옴표 `href`/`src`/`action` 속성, `data-url`/`data-href`/`data-action`/`data-src` 속성, `srcset` 속성(쉼표 분리 첫 토큰), `<meta http-equiv="refresh">` url= 값, `<base href>` 기준 상대 URL 해석. 스크립트 본문(`<script>` 블록·인라인 이벤트 핸들러·`.js` 파일)에서는 `fetch`/`XMLHttpRequest`/`$.ajax`/`axios`/`window.open`/`location.href` 등 JS 호출 URL을 추출하여 큐에 추가한다. HTML 속성에서 추출된 URL에는 `html.unescape()`를 적용해 `&amp;` 등 엔티티를 복원한 뒤 파싱한다.
-- 동일 서명(path + 쿼리 파라미터명 집합)의 URL은 최대 3회까지만 방문하여 페이지네이션 트랩으로 인한 `max_pages` 예산 낭비를 방지한다.
+- 응답을 `html` / `script` / `json` / `other` 네 종류로 분류한다. `text/html` 또는 `application/xhtml+xml` CT이면 `html`, `javascript`/`ecmascript` CT 또는 `.js` URL이면 `script`, `application/json` CT이면 `json`. 위 CT로 특정되지 않는 모든 경우(CT 누락·`text/plain`·`application/xml`·`application/octet-stream` 등)에는 응답 본문 앞 500자를 스니핑하여 `<!doctype html`·`<html`·`<?xml` 등 흔한 HTML 태그로 시작하면 `html`로, `{`/`[`로 시작하고 `json.loads` 파싱에 성공하면 `json`으로 승격, 둘 다 아니면 `other`. 분류는 HTTP 상태 코드와 무관하게 적용되어 403·404 등 비200 응답도 분류 결과에 따라 본문이 파싱된다. `html`·`script`·`json`은 본문을 보관하고 링크·입력 포인트 추출 대상이 된다. `other`는 경로 수집용으로만 기록한다.
+- HTML 본문에서 링크를 추출하는 소스: 따옴표·미따옴표 `href`/`src`/`action` 속성(등호 앞뒤 공백 허용, 값 내부에 반대 따옴표가 있어도 여는 따옴표와 짝이 맞는 지점까지 캡처), `data-url`/`data-href`/`data-action`/`data-src` 속성, `srcset` 속성(쉼표 분리 첫 토큰), `<meta http-equiv="refresh">` url= 값, `<base href>` 기준 상대 URL 해석, GET `<form>`(action + 필드명을 조합한 쿼리 URL로 큐 추가, POST 폼은 제외). 스크립트 본문(`<script>` 블록·인라인 이벤트 핸들러·`.js` 파일)에서는 `fetch`/`XMLHttpRequest`/`$.ajax`/`axios`/`window.open`/`location.href` 등 JS 호출 URL을 백틱(`` ` ``) 템플릿 리터럴 포함하여 추출해 큐에 추가한다(`${...}` 보간이 포함된 URL은 실제 경로가 아니므로 큐잉 제외). HTML 속성에서 추출된 URL에는 `html.unescape()`를 적용해 `&amp;` 등 엔티티를 복원한 뒤 파싱한다.
+- 동일 서명(path + 쿼리 파라미터명 집합)의 URL은 최대 3회까지만 방문하여 값만 변하는 URL의 반복 트랩으로 인한 `max_pages` 예산 낭비를 방지한다. 단, 파라미터명이 페이지네이션 성격(`page`/`p`/`pg`/`pageno`/`page_no`/`pagenum`/`offset`/`start`/`skip`/`from`/`idx`)이면 이 상한을 적용하지 않아, `?page=1..N`처럼 이어지는 링크는 `max_pages` 한도 내에서 계속 발견될 수 있다.
 - 요청 실패 시 `Timeout`·`ChunkedEncodingError`에 한해 최대 2회 재시도(0.5 s → 1.0 s 백오프)한다. `ConnectionError`·`SSLError` 등 영구적 오류는 즉시 중단한다.
 - `stop_event`가 전달되면 매 페이지 진입·재시도 백오프·요청 간 딜레이 지점에서 `wait_or_cancel()`로 [중단] 여부를 검사하여, set 시 진행 중인 1건만 마치고 즉시 `ScanCancelled`로 크롤을 종료한다.
 - 인증 세션 파기 방지를 위해 경로의 마지막 segment가 `logout` / `log-out` / `signout` / `sign-out`에 해당하는 링크는 큐 추가 단계에서 제외한다.
 - 매칭 예시: `/logout`, `/auth/logout`, `/sqli/logout.jsp` 차단 / `/logout-help` 같은 확장 문자열은 차단 대상 아님.
-- **도메인 경계 (보수적 정책):** 스캔 대상은 진입 URL과 동일한 `host:port`(netloc)로 엄격히 제한된다. 서브도메인(`api.site.com` 등)은 같은 자산으로 보이더라도 별도 netloc이므로 스코프에서 제외된다. robots.txt·sitemap·JS에서 추출한 URL도 이 경계로 필터된다. 이는 진단 범위 이탈을 방지하기 위한 의도적·보수적 설계이다.
+- **도메인 경계 (보수적 정책):** 스캔 대상은 진입 URL과 동일 사이트로 제한된다(`_same_site()`). 호스트명 대소문자는 무시하며, 선행 `www.` 유무 한 단계 차이(`example.com` ↔ `www.example.com`)만 동일 사이트로 취급한다. 포트가 다르거나 그 외 서브도메인(`api.site.com` 등)은 같은 자산으로 보이더라도 별도 netloc이므로 스코프에서 제외된다. robots.txt·sitemap·JS에서 추출한 URL도 이 경계로 필터된다. 이는 진단 범위 이탈을 방지하기 위한 의도적·보수적 설계이다.
 - **JS 렌더링 모드 (render=True, 기본 OFF)**: Playwright Chromium 헤드리스로 각 페이지를 렌더링하여 SPA·REST API 엔드포인트를 포착한다. 탐색 단계에만 사용하며 공격(주입) 요청은 계속 `requests`를 사용한다. 세 가지 수집 경로: ① 렌더 후 DOM(`page.content()`)에서 링크·입력 포인트 추출 — 기존 정적 추출 로직 그대로 재사용. ② 네트워크 인터셉션 — 브라우저가 실제 발생시키는 GET(쿼리 파라미터) / POST(바디) 트래픽을 입력 포인트로 기록, `kind="xhr"` 합성 엔트리로 반환. ③ `application/json` 응답은 `kind="json"` 분류 후 본문을 재귀 탐색하여 같은 도메인 URL 쿼리 파라미터를 수집(HATEOAS 커버, 렌더 OFF 정적 크롤에도 적용). C2 강제: 비-GET·GET 로그아웃은 라우트 단계에서 abort(전송 차단). 의존성 최초 설치 시 `_core._ensure_render_deps()`가 playwright 패키지 + Chromium 바이너리를 lazy 설치. 의존성·브라우저 기동 실패 시 정적 크롤로 자동 폴백.
 - 크롤러 반환 dict 필드: `url`(최종 URL) / `path`(경로) / `body`(html·script·json 종류의 응답 본문, other·xhr는 None) / `kind`("html" \| "script" \| "json" \| "other" \| "xhr") / `visited_at`(방문 타임스탬프) / `points`(kind="xhr" 전용, 네트워크 인터셉션 입력 포인트 list).
 
@@ -239,7 +255,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     "type":          str | None,   # sql_injection — error_based / boolean_based / inline_query
     "payload":       str | None,   # sql_injection — 주입 페이로드
     "dbms":          str | None,   # sql_injection(error_based) — 식별된 DBMS
-    "tech_stack":    str | None,   # default_pages — 탐지된 기술 스택명
+    "tech_stack":    str | None,   # default_pages — 탐지된 기술 스택명. 스택 무관 공통 점검(modules/data/common.json)은 "Common"
     "status_code":   int | None,   # default_pages / directory_listing — HTTP 응답 코드
     "exposed_files": list | None,  # directory_listing — 노출 파일 목록 (최대 20)
     "total_files":   int | None,   # directory_listing — 전체 노출 파일 수
@@ -254,6 +270,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
 | HIGH | path_traversal | 파라미터 값에서 경로·IP·URL 패턴 탐지 — LFI·SSRF·오픈리다이렉트·파일 다운로드 등 수동 검증 단서 |
 | MEDIUM | directory_listing, default_pages(관리 콘솔·실행 경로) | 단일 취약점으로 서버 내 직접 탐색/악용 가능 |
 | LOW | default_pages(샘플·문서 페이지) | 버전·내부 정보 노출 |
+| INFO | default_pages(BurpSuite 프록시 에러 응답) | 응답 본문에 `Burp Suite` 포함 시 판정 신뢰 불가로 강등 — 재검증 필요 |
 
 각 모듈 상세는 [modules/directory_listing.md](modules/directory_listing.md), [modules/default_pages.md](modules/default_pages.md), [modules/sql_injection.md](modules/sql_injection.md), [modules/sqli_extract.md](modules/sqli_extract.md), [modules/path_traversal.md](modules/path_traversal.md) 참고.
 
@@ -270,7 +287,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
 | 기법 | 속도 | 적용 조건 | 1행당 요청 수 |
 |------|------|-----------|---------------|
 | **Error-based** | 빠름 | DBMS 에러 메시지를 응답 본문에 노출하는 환경 | 2 (length + content) |
-| **Boolean-blind** | 매우 느림 | 응답 차이만 관찰 가능한 환경 (HEX × 5비트 이진 탐색) | 421 (`21 + 80×5`) |
+| **Boolean-blind** | 매우 느림 | 응답 차이만 관찰 가능한 환경 (`use_hex` 토글: HEX 5비트 또는 raw 8비트 이진 탐색) | 421 (`21 + 80×5`, `use_hex=True` 기준 — `False`(raw)면 글자당 비교 8회로 소폭 감소, ASCII/단일바이트 전용) |
 | **UNION-based** | 빠름 | 컬럼 수·타입을 사전 입력 가능한 환경 | 2 |
 
 지원 DBMS: **MySQL / MariaDB / MSSQL / PostgreSQL / Oracle / SQLite** (SQLite + Error는 미지원, 호출부가 재선택 모달 트리거).
@@ -280,7 +297,7 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
 - **랜덤 마커 시스템** — `qDLMTRq`(컬럼 구분자) / `qROWMTRq`(UNION 묶음 행 구분자) / `SecTestS...SecTestE`(UNION 격리) / `SecTest`+2자 hex 9자 마커(Error/Inline 격리)로 응답에서 추출 데이터를 정확히 분리
 - **CHAR/CHR echo-immune 마커** — UNION 페이로드의 모든 마커 리터럴(`SecTestS`/`SecTestE`/`SecTestC{i}` visible probe)은 DBMS의 `CHAR(n,...)`(MySQL/MariaDB/MSSQL/SQLite) 또는 `CHR(n)||CHR(n)||...`(PostgreSQL/Oracle) 함수로 인코딩하여 페이로드에 평문 마커가 들어가지 않게 함. 응답 echo 환경(예: `<input value="...">`로 입력이 그대로 반사되는 페이지)에서도 echo 영역엔 SQL 함수 표현만 노출되고 실제 SQL 실행 결과로만 디코드된 마커가 나타나, 렌더링 영역과 echo 영역이 자연스럽게 분리됨
 - **컨텍스트 자동 탐지** — `quote_context=None`일 때 진입 시 `'`/`"`/`')`/`'))`/numeric 등을 자동 식별. 수동 지정값(`""`=numeric 포함)은 자동 탐지 스킵
-- **HEX 인코딩** — Boolean-blind는 `LENGTH(HEX(expr))` 기반 5비트 이진 탐색으로 multibyte 안전. UNION은 `union_hex=True`(기본) 시 동일 방식. 모든 DBMS에서 HEX 함수 인수를 문자열로 강제 캐스팅(`MySQL`/`MariaDB` → `CAST(... AS CHAR)`, `PostgreSQL` → `::TEXT::bytea`, `Oracle` → `TO_CHAR(...)`, `MSSQL` → `CONVERT(NVARCHAR(MAX),...) AS varbinary(MAX)`)해 정수 입력 시 odd-length hex 오류를 방지. 디코드는 MSSQL만 UTF-16 LE(`utf-16-le`), 나머지는 UTF-8. MSSQL `fn_varbintohexstr` 결과의 `0x` prefix는 자동 strip
+- **HEX 인코딩(`use_hex`, 기본 `True`, Error/Boolean/UNION 3기법 공통 토글)** — `True`면 Boolean은 `LENGTH(HEX(expr))` 기반 5비트 이진 탐색, Error는 청크 SUBSTRING 결과를 HEX로 감싸 디코드, UNION은 `HEX_FUNCS`로 감싼 값을 디코드 — 세 기법 모두 multibyte 안전. `False`(raw)면 원문에 직접 연산해 요청 수가 줄지만 ASCII/단일바이트 데이터 전용(DBMS별 ascii/ord/unicode 함수 반환값이 달라 멀티바이트는 부정확). 모든 DBMS에서 HEX 함수 인수를 문자열로 강제 캐스팅(`MySQL`/`MariaDB` → `CAST(... AS CHAR)`, `PostgreSQL` → `::TEXT::bytea`, `Oracle` → `TO_CHAR(...)`, `MSSQL` → `CONVERT(NVARCHAR(MAX),...) AS varbinary(MAX)`)해 정수 입력 시 odd-length hex 오류를 방지. 디코드는 MSSQL만 UTF-16 LE(`utf-16-le`), 나머지는 UTF-8. MSSQL `fn_varbintohexstr` 결과의 `0x` prefix는 자동 strip. **Boolean 모드 HEX 정규화(`_blind_hex_expr`)**: Boolean 이진 탐색의 비교 범위는 `[48,70]`(ASCII `'0'`–`'F'`, 대문자)로 고정되므로 소문자를 출력하는 PostgreSQL(`ENCODE(...,'hex')`)과 `0x` prefix를 붙이는 MSSQL(`fn_varbintohexstr`)은 SQL 레벨에서 정규화가 필요함. `_blind_hex_expr`이 PG는 `UPPER(ENCODE(::bytea,'hex'))`, MSSQL은 `UPPER(SUBSTRING(fn_varbintohexstr(...),3,...))` 형태로 변환해 추가 요청 없이 대문자·no-prefix HEX를 보장
 - **DBMS별 식별자 quoting** — MySQL/MariaDB는 백틱, MSSQL은 대괄호, PostgreSQL/Oracle/SQLite는 큰따옴표
 - **PostgreSQL UNION 캐스트** — `NULL::TEXT` / `(CHR(n)||...)::TEXT`로 명시 캐스트하여 타입 매칭 에러 회피
 
@@ -294,41 +311,48 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 | Table 목록 | `WHERE TABLE_SCHEMA=db ORDER BY TABLE_NAME LIMIT n,1` |
 | Column 목록 | `WHERE TABLE_SCHEMA=db AND TABLE_NAME=tbl ORDER BY ORDINAL_POSITION LIMIT n,1` |
 | Row dump (1행씩) | `SELECT col1\|\|DELIM\|\|col2... FROM tbl LIMIT n,1` (NULL-safe + `qDLMTRq` 구분자) |
-| Row dump (UNION 묶음) | DBMS 집계 함수로 N행을 `qROWMTRq`로 결합 후 HEX 추출. 집계 한계 초과·잘림 시 윈도우 단위 1행씩 폴백 |
+| Row dump (UNION 묶음) | DBMS 집계 함수로 N행을 `qROWMTRq`로 결합 후 추출(`use_hex`에 따라 HEX 디코드 또는 raw). 집계 한계 초과·잘림 시 윈도우 단위 1행씩 폴백 |
 | 목록 추출 (UNION 묶음) | `_q_base_*` base SELECT → `_q_batch_list` 집계 → `qROWMTRq` split. 실패·잘림 시 window=1 집계 폴백 |
 
 진입 함수 시그니처는 [modules/sqli_extract.md](modules/sqli_extract.md) 참고.
 
 ### 5-4. 결과 저장
 
-`save_to_excel(extracted, target_url, output_dir, excel_name=None)` — 추출 결과를 엑셀 파일로 저장. 동일 이름으로 호출 시 항상 덮어쓰기.
+`save_to_excel(extracted, target_url, output_dir, excel_name=None, file_prefix="extract")` — 추출 결과를 엑셀 파일로 저장. 동일 이름으로 호출 시 항상 덮어쓰기.
 
-- **마스터 파일** `extract_<name>_DBfingerprint.xlsx`: INFO(메타+Fingerprint 결과+UNION 정보) + DBList(DB 목록) — fingerprint 완료 직후 즉시 생성
-- **DB별 파일** `extract_<name>_<db>.xlsx`: INFO + `_TableMap`(시트명↔원본 테이블명 매핑) + 테이블별 시트
+- **마스터 파일** `{file_prefix}_<name>_DBfingerprint.xlsx`: INFO(메타+Fingerprint 결과+UNION 정보+Total Databases) + DBList(DB 목록) [+ SearchResult] — fingerprint 완료 직후 즉시 생성
+- **DB별 파일** `{file_prefix}_<name>_<db>.xlsx`: INFO(+Total Tables) + `_TableMap`(시트명↔원본 테이블명↔총 컬럼수 매핑) + 테이블별 시트
 - **시트명 sanitize**: 31자 제한 + 금지문자 `[]:*?/\\` 치환 + `INFO`·`_TABLEMAP` 충돌·dedup 처리
 - **셀 sanitize**: `=`/`+`/`-`/`@`/탭/CR로 시작하는 값에 `'` prefix 부착 (Excel formula injection 차단). 읽기 시 `_restore_cell_value`로 제거
-- **이전 결과 복원**: `load_from_excel(name, dir)` — 마스터 INFO에서 ctx 핵심값(DBMS/기법/컨텍스트/UNION) 복원 → fingerprint 자동탐지 생략. DBList + DB별 파일에서 databases/tables/columns/dumps 복원
+- **이전 결과 복원**: `load_from_excel(name, dir)` — 마스터 INFO에서 ctx 핵심값(DBMS/기법/컨텍스트/위치(position)/blind_template/UNION) 복원 → fingerprint 자동탐지 생략. DBList + DB별 파일에서 databases/tables/columns/dumps 복원. Total Databases/Total Tables/총 컬럼수도 `extracted["totals"]`로 함께 복원되어, 저장 당시 목록이 부분 추출 상태였으면 이어받기 가능
+- **특수 검색모드 격리**: `file_prefix="search(<대상>-<검색어>)"`로 호출하여 일반 추출 파일과 완전히 분리된 파일에 저장. `extracted["search"]`(`{target, match, keyword, total, hits}`)가 있으면 마스터 파일에 **SearchResult** 시트(검색대상/매칭방식/키워드/위치/DB/테이블/컬럼)와 **INFO 시트의 Search 메타 4행**(Search Target/Match/Keyword/Total)이 추가된다. 드릴다운 결과도 동일 `file_prefix` 규칙으로 DB별 파일에 저장된다
+- **검색 결과 복원**: `load_search_from_excel(excel_name, search_prefix, dir)` — INFO 시트에 "Search Total" 키가 있으면 신규 포맷으로 판단, Search 메타(target/match/keyword/total)와 SearchResult 시트의 DB/테이블/컬럼 컬럼에서 `hits_raw`를 재구성해 `(hits_raw, meta)` 반환. 키가 없으면 구버전 파일로 간주해 `None` 반환(신규 스캔 폴백). 라이브 데이터 변동(매칭 행 추가·삭제) 시 offset 재개(A경로) 또는 완료 판정(B경로) 오류 가능 — 검색 대상 DB가 비교적 안정적인 환경에서 사용 권장
 
 ### 5-5. API 사용법
 
-**REST API** (`app.py`, 6개 엔드포인트):
+**REST API** (`app.py`, 7개 엔드포인트):
 
 요청 간 딜레이는 `speed` 필드로 1~6 레벨 제어 (5.0s ~ 0.0s, 1초 간격). fingerprint 단계는 사용자 delay와 무관하게 최소 0.3s/요청 강제 (`FINGERPRINT_DELAY_FLOOR`).
 
 | 메서드 | 경로 | 용도 |
 |--------|------|------|
 | GET | `/api/extract/check-existing` | `?name=<excel_name>`으로 기존 파일 존재 확인. `{exists, summary?}` 반환 |
+| GET | `/api/extract/search-check-existing` | `?name=<excel_name>&target=<database\|table\|column>&match=<contains\|exact>&keyword=<검색어>`로 특수 검색모드 기존 결과 존재·진행률 확인. `load_search_from_excel`로 파일을 읽어 target/match/keyword가 모두 일치할 때만 `{exists:true, total, current_count}` 반환, 그 외는 `{exists:false}` |
 | POST | `/api/extract/start` | job 생성 + fingerprint 백그라운드 시작 |
 | GET | `/api/extract/<id>/status` | 진행 상태 폴링 (ctx/절대경로 미노출) |
-| POST | `/api/extract/<id>/action` | 액션 트리거 (`dbms_info`/`databases`/`tables`/`columns`/`dump`) — 동시 호출 시 409 Conflict. `dump` + `confirm:false` 응답: `{ok, estimate:{rows,requests,seconds}, resume_from}` — `resume_from` &gt; 0이면 같은 컬럼의 부분 데이터가 있어 이어받기 가능, `estimate.rows`는 **남은** 행 수 |
-| POST | `/api/extract/<id>/retechnique` | 기법 또는 DBMS 변경 후 fingerprint 재실행. Body `{technique?, dbms?}` — 둘 중 하나 필수. DBMS 자동 식별 실패 시 `dbms`만 지정 가능 (SQLite+Error 조합은 400) |
+| POST | `/api/extract/<id>/action` | 액션 트리거 (`dbms_info`/`databases`/`tables`/`columns`/`dump`/`search`) — 동시 호출 시 409 Conflict. `databases`/`tables`/`columns`는 최초 호출 시 COUNT로 총개수를 산출해 `extracted.totals`에 저장(이후 재사용)하고, 목록 길이가 총개수에 못 미치면 부분 추출로 간주해 캐시 미스 처리 — 호출 시 기존 목록에 이어서 추출(resume)한다. 목록·dump·검색 스캔 모두 진행 중 30초 간격으로 조용한 엑셀 체크포인트 저장. `dump` + `confirm:false`는 COUNT 쿼리(Boolean-blind 기준 15~20+ 요청 소요 가능)를 `dump_estimate:<key>` 액션으로 백그라운드 스레드에서 비동기 실행한다 — 다른 액션과 동일하게 즉시 `{ok:true}`만 반환하며, 실제 견적은 상태 폴링(`current_action_id`가 `null`로 복귀)으로 확인한다. 완료 시 상태 응답에 `estimate:{rows,requests,seconds}`(남은 행 기준)·`estimate_resume_from`(0보다 크면 같은 컬럼의 부분 데이터가 있어 이어받기 가능) 필드가 채워진다. `search`는 `search_target`(`database`/`table`/`column`)·`search_match`(`contains`/`exact`)·`search_keyword`로 DB/테이블/컬럼명을 검색해 `{db,table,column,display}` 구조의 히트 목록을 반환 — 기법·DBMS·커스텀 페이로드는 세션 시작 시 확정된 `ctx`를 그대로 사용(재선택 없음). 히트는 검색 완료 후 일괄 반환이 아니라 진행 중 확인되는 즉시 `search_extracted.search.hits`에 증분 반영되어 상태 폴링으로 실시간 노출된다 |
+| POST | `/api/extract/<id>/retechnique` | 기법 또는 DBMS 변경 후 fingerprint 재실행. Body `{technique?, dbms?, position?, blind_template?}` — `technique`/`dbms`/`position` 중 하나 필수. DBMS 자동 식별 실패 시 `dbms`만 지정 가능 (SQLite+Error, SQLite+where_case/orderby 조합은 400). `position=custom` 시 `blind_template` 필수 |
 | POST | `/api/extract/<id>/cancel` | `ctx.cancelled=True` 동기화로 안전 중단. `_send`의 요청 간 딜레이는 `_throttle()`이 `ctx.cancelled`를 50ms 간격 폴링하므로, 긴 delay 도중에도 진행 중인 1건만 마치고 즉시 `InterruptedError`로 빠져나온다. Body `{reset: bool}` — `false`(기본): 현재 액션만 취소 후 ready 복귀 (누적 데이터 유지), `true`: 완전 종료 후 GC 대상 편입. 진행 중 액션 없으면 상태 무관하게 즉시 cancelled 마킹 |
 
 `extract_jobs` dict는 인메모리 저장이며 완료/취소 후 1시간 경과 job은 다음 start 호출 시 TTL GC 정리. 외부 도메인 차단은 ExtractCtx 생성 시 `allowed_netloc` 1회 저장 후 `_send` 사전·사후 검증으로 강제된다.
 
-`/api/extract/start` 추가 필드: `proxy_host` / `proxy_port` (선택) — 프록시 설정. `base64_encode` (bool, 기본 false) — SQL 페이로드만 Base64 인코딩. `save_excel` (bool, 기본 false) — `true` 시 `excel_name` 필수. `excel_name` (문자열) — 저장 이름 (예: `test` → `extract_test_DBfingerprint.xlsx`, `extract_test_<db>.xlsx`). `reuse` (bool, 기본 false) — `true` 시 기존 파일에서 extracted 복원 + fingerprint 자동탐지 생략. `dbms` (문자열, 선택) — 지정 시 DBMS 자동 탐지 스킵. `union_visible` (정수, 1-based, 선택) — 지정 시 UNION visible 자동 탐지 스킵. `union_row_batch` (정수, 기본 1) — UNION dump 시 한 요청으로 추출할 행 수. 1이면 기존 1행씩 동작, N이면 DBMS 집계 함수로 묶음 추출 후 한계 초과·잘림 시 윈도우 단위 폴백.
+`/api/extract/start` 추가 필드: `proxy_host` / `proxy_port` (선택) — 프록시 설정. `base64_encode` (bool, 기본 false) — SQL 페이로드만 Base64 인코딩. `save_excel` (bool, 기본 false) — `true` 시 `excel_name` 필수. `excel_name` (문자열) — 저장 이름 (예: `test` → `extract_test_DBfingerprint.xlsx`, `extract_test_<db>.xlsx`). `reuse` (bool, 기본 false) — `true` 시 기존 파일에서 extracted 복원 + fingerprint 자동탐지 생략. `dbms` (문자열, 선택) — 지정 시 DBMS 자동 탐지 스킵. `union_visible` (정수, 1-based, 선택) — 지정 시 UNION visible 자동 탐지 스킵. `union_row_batch` (정수, 기본 1) — UNION dump 시 한 요청으로 추출할 행 수. 1이면 기존 1행씩 동작, N이면 DBMS 집계 함수로 묶음 추출 후 한계 초과·잘림 시 윈도우 단위 폴백. `position_mode` (문자열, `"auto"`/`"manual"`, 기본 `"auto"`) — Boolean-blind 전용. `auto`이면 fingerprint 2단계에서 자동 탐지(Phase 1: WHERE AND, Phase 2: WHERE_CASE/ORDER BY CASE WHEN). `manual`이면 `position_value`로 명시. `position_value` (문자열, `"where"`/`"where_case"`/`"orderby"`/`"custom"`) — `position_mode=manual` 시 필수. `where_case`/`orderby`는 boolean 기법 + non-SQLite DBMS 전용. `custom`은 boolean 전용으로 `blind_template`을 함께 전달해야 함. `blind_template` (문자열) — `position_value=custom` 시 필수. `{cond}` 자리표시자를 포함한 전체 페이로드 템플릿(따옴표·CASE WRAP·주석 포함). qc 탐지·위치 탐지 모두 스킵하고 SQLite 제한도 미적용.
+
+`/api/extract/<id>/action`의 `search_mode` 필드(bool, 기본 false, `search` 포함 모든 액션 공통) — `true`이면 일반 추출용 `extracted` 대신 격리된 `search_extracted`를 대상으로 액션을 실행하는 **검색 결과 드릴다운 모드**로 전환된다. `databases`/`tables`/`columns`/`dump`는 코드 변경 없이 그대로 재사용되며(대상 dict만 교체), 엑셀 저장도 `_search_file_prefix(job)`(`search(<target>-<keyword>)`)로 자동 격리된다. `search_extracted`가 아직 없는 상태에서 `search_mode:true` + `action != "search"`이면 400 에러(먼저 검색 실행 필요). `search` 액션 전용 추가 필드: `resume_search` (bool, 기본 false) — `true`이면 `save_excel=True` + `excel_name`이 있을 때 기존 검색 파일에서 hits_raw/total을 복원해 이어서 스캔. 파일 없음·포맷 불일치·조건(target/match/keyword) 불일치 시 조용히 신규 스캔으로 폴백. MSSQL table/column 경로는 완료 DB 스킵 + 미완료 DB 재스캔(raw dedup으로 중복 제거, COUNT는 항상 재계산).
 
 `/api/extract/<id>/status` 응답의 `fingerprint` 객체: `failure_reason` 필드 추가 — `"dbms_detection"` (DBMS 자동 식별 실패, 수동 선택 모달 트리거) / `"technique"` (기법 미지원, 기법 재선택 모달 트리거). `unsupported_techniques`는 `failure_reason === "technique"`일 때만 `[ctx.technique]`으로 채워짐.
+
+`/api/extract/<id>/status` 응답에 특수 검색모드 전용 필드 추가 — `search_extracted`(검색/드릴다운 결과 dict, 미실행 시 `null`) / `search_meta`(`{target, match, keyword}`, 미실행 시 `null`) / `search_excel_files`(검색 결과 엑셀 파일명 목록, 일반 `excel_files`와 별개 배열).
 
 ---
 
@@ -380,3 +404,67 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 `/api/merge` 응답: `{columns, total_rows, per_file:[{name, sheets_read, rows_added, new_columns, skipped, error}], skipped_files, download_name}`
 
 엑셀 취합은 네트워크 없는 로컬 배치 연산으로 보통 수초 내 완료되므로 **동기 처리** (잡 폴링 불필요).
+
+---
+
+## 7. 정보수집 OSINT (별도 모드)
+
+본 섹션은 SpaceScan의 정보수집(OSINT) 모드를 설명한다. 탐지 모듈(§4)·SQLi 추출(§5)·엑셀 취합(§6)과 인터페이스를 공유하지 않으며, 사용자가 대시보드 "정보수집 (OSINT)" 탭에서 직접 진입한다. 구현체는 [modules/recon.py](modules/recon.py)이며 모듈 상세는 [modules/recon.md](modules/recon.md)를 참고한다.
+
+### 7-1. 하드 룰 — 순수 패시브
+
+**대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다.** 직접 접속하는 호스트는 아래 4개 제3자 소스뿐이다.
+
+| 소스 키 | 호스트 | 조회 내용 |
+|---------|--------|----------|
+| `crtsh` | crt.sh | CT(Certificate Transparency) 로그 → 서브도메인 + 인증서 메타 |
+| `wayback` | web.archive.org | Wayback Machine CDX 인덱스(`matchType=domain`) → 서브도메인 + 아카이브 URL (스냅샷 본문 미조회) |
+| `dns` | 8.8.8.8 / 1.1.1.1 | 공용 DNS 리졸버로 레코드 조회 (`dns.resolver.Resolver(configure=False)`로 OS 기본 리졸버 배제) |
+| `internetdb` | internetdb.shodan.io | Shodan이 사전 수집해 둔 IP별 포트 정보 (무키, 읽기 전용 — 온디맨드 스캔 아님) |
+
+### 7-2. 오케스트레이션 — `run_recon()`
+
+```
+1. crt.sh 조회        → 서브도메인 집합 확보 + 인증서 메타                [progress 10%]
+2. Wayback CDX 조회   → 서브도메인 집합 병합 + 아카이브 URL 확보          [progress 20%]
+3. 서브도메인 정렬 후 max_subdomains(기본 200, 10~1000)로 절단
+4. DNS 조회 (공용 리졸버만) → 절단된 각 host의 A/AAAA/(CNAME) 확인       [progress 20→80%]
+5. InternetDB 조회 → DNS로 확인된 각 IP의 포트/서비스 정보                [progress 80→100%]
+```
+
+`sources`에 `internetdb`만 선택해도 IP 확보를 위해 `dns`가 자동 포함된다. 각 단계 반복 지점에서 `modules/_cancel.py`의 `wait_or_cancel(stop_event, 0)`로 중단 요청을 즉시 검사한다. 반환 dict의 `subdomains`/`dns_records`/`certificates`/`archive_urls`/`ports`/`errors`/`meta` 필드 상세는 [modules/recon.md](modules/recon.md) 참고.
+
+### 7-3. 결과 저장
+
+- `generate_recon_html(result, output_dir)` — `reports/recon_<domain>_<timestamp>.html`. 서브도메인/DNS/인증서/아카이브 URL/포트 5개 섹션 + 상단 통계 카드.
+- `save_recon_to_excel(result, output_dir)` — `reports/recon_<domain>_<timestamp>.xlsx`. 시트 구성: `INFO`/`Subdomains`/`DNS`/`Certificates`/`ArchiveURLs`/`Ports`. 셀 sanitize: `=`/`+`/`-`/`@`/탭/CR로 시작하는 문자열에 `'` prefix (Excel formula injection 차단).
+
+### 7-4. API
+
+| 메서드 | 경로 | 용도 |
+|--------|------|------|
+| POST | `/api/recon/start` | job 생성 + 백그라운드 실행. 요청 필드: `domain`(필수), `sources`(배열, 기본 `SOURCE_KEYS` 전체), `timeout`(3~30초 범위 보정, 기본 8), `max_subdomains`(10~1000 범위 보정, 기본 200) |
+| GET | `/api/recon/<id>/status` | 진행 상태 폴링. `stop_event`/`html_report`/`excel_report`(절대경로) 제외, 대신 `has_html_report`/`has_excel_report` boolean 노출 |
+| POST | `/api/recon/<id>/cancel` | `stop_event.set()`으로 중단. 이미 종료(`completed`/`cancelled`/`error`) 상태면 400 |
+| GET | `/api/recon/<id>/report/html` | HTML 리포트 다운로드 (`send_file`) |
+| GET | `/api/recon/<id>/report/excel` | Excel 리포트 다운로드 (`send_file`, `as_attachment=True`) |
+
+**job_dict 구조**
+```python
+{
+    "job_id":       str,          # recon_YYYYMMDD_HHMMSS_<6자리 hex>
+    "domain":       str,
+    "sources":      list[str],
+    "status":       str,          # pending / running / completed / cancelled / error
+    "progress":     int,          # 0~100
+    "stop_event":   "Event",      # threading.Event (클라이언트 미노출)
+    "result":       dict | None,  # run_recon() 반환값
+    "html_report":  str | None,   # 절대 경로 (클라이언트 미노출)
+    "excel_report": str | None,   # 절대 경로 (클라이언트 미노출)
+    "error":        str | None,
+    "created_at":   str,
+    "completed_at": str | None,
+}
+```
+
+`recon_jobs` dict는 인메모리 저장이며, 완료/취소/에러 후 1시간(`JOB_TTL_SEC`) 경과한 job은 다음 `/api/recon/start` 호출 시 TTL GC로 정리된다.

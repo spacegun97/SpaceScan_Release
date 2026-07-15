@@ -20,22 +20,39 @@ LOGOUT_PATTERN = re.compile(
     r'/(logout|log-out|signout|sign-out)(/|\.|$)', re.IGNORECASE
 )
 
+# 페이지네이션 성격 파라미터 — C9 서명 방문 상한(3회) 예외 대상
+# (예: ?page=1..N 형태로 이어지는 링크가 max_pages까지 계속 발견되도록 허용)
+_PAGINATION_PARAMS = frozenset({
+    "page", "p", "pg", "pageno", "page_no", "pagenum",
+    "offset", "start", "skip", "from", "idx",
+})
+
 # 스크립트 본문에서 링크 발견용 JS URL 패턴 (큐 확장 목적)
+# C-6: 백틱(`) 템플릿 리터럴 포함 — 링크 발견(큐 확장)만이 목적이라 ${...} 보간이 섞여도
+# _add()의 '${' 가드가 걸러낸다. _sqli_util._JS_URL_PATTERNS는 실제 입력 포인트를 구성하므로
+# 백틱을 별도로 제외한 자체 패턴을 갖는다 (아래 참조 없이 독립 정의).
 _JS_LINK_PATTERNS = [
-    re.compile(r"""\bfetch\s*\(\s*["']([^"']+)["']""", re.IGNORECASE),
-    re.compile(r"""\.open\s*\(\s*["']\w+["']\s*,\s*["']([^"']+)["']""", re.IGNORECASE),
-    re.compile(r"""\$\.(?:get|post|ajax)\s*\(\s*["']([^"']+)["']""", re.IGNORECASE),
-    re.compile(r"""\$\.ajax\s*\(\s*\{[^}]*?url\s*:\s*["']([^"']+)["']""",
+    re.compile(r"""\bfetch\s*\(\s*["'`]([^"'`]+)["'`]""", re.IGNORECASE),
+    re.compile(r"""\.open\s*\(\s*["']\w+["']\s*,\s*["'`]([^"'`]+)["'`]""", re.IGNORECASE),
+    re.compile(r"""\$\.(?:get|post|ajax)\s*\(\s*["'`]([^"'`]+)["'`]""", re.IGNORECASE),
+    re.compile(r"""\$\.ajax\s*\(\s*\{[^}]*?url\s*:\s*["'`]([^"'`]+)["'`]""",
                re.IGNORECASE | re.DOTALL),
-    re.compile(r"""axios\.(?:get|post|put|delete|patch)\s*\(\s*["']([^"']+)["']""",
+    re.compile(r"""axios\.(?:get|post|put|delete|patch)\s*\(\s*["'`]([^"'`]+)["'`]""",
                re.IGNORECASE),
-    re.compile(r"""window\.open\s*\(\s*["']([^"']+)["']""", re.IGNORECASE),
-    re.compile(r"""location\.(?:href|replace|assign)\s*(?:=|\()\s*["']([^"']+)["']""",
+    re.compile(r"""window\.open\s*\(\s*["'`]([^"'`]+)["'`]""", re.IGNORECASE),
+    re.compile(r"""location\.(?:href|replace|assign)\s*(?:=|\()\s*["'`]([^"'`]+)["'`]""",
                re.IGNORECASE),
 ]
 
 # 스크립트 Content-Type 키워드
 _SCRIPT_CT_KEYWORDS = ("javascript", "ecmascript")
+
+# CT로 분류되지 않은 응답의 본문 스니핑용 — 선행 HTML 주석 이후 흔한 HTML 태그로 시작하는지 확인
+_HTML_SNIFF_RE = re.compile(
+    r'^(?:\s*<!--.*?-->)*\s*<(?:!doctype\s+html|\?xml|html|head|body|div|table'
+    r'|ul|ol|section|main|article|nav|header|footer|span|p|a)\b',
+    re.IGNORECASE | re.DOTALL
+)
 
 
 class _RenderedResponse:
@@ -55,32 +72,45 @@ def _is_logout_path(path: str) -> bool:
     return bool(LOGOUT_PATTERN.search(path))
 
 
+def _same_site(netloc: str, base_netloc: str) -> bool:
+    """netloc이 base_netloc과 동일 사이트인지 확인한다.
+
+    호스트 대소문자를 무시하고, 선행 "www." 유무 한 단계만 동일 취급한다.
+    (예: example.com ↔ www.example.com은 동일 취급, api.example.com은 별개 취급)
+    포트·그 외 서브도메인은 그대로 구분한다.
+    """
+    def _canon(n: str) -> str:
+        n = n.lower()
+        return n[4:] if n.startswith("www.") else n
+    return _canon(netloc) == _canon(base_netloc)
+
+
 def _classify_response(resp: requests.Response, final_url: str) -> str:
     """응답을 'html' / 'script' / 'json' / 'other' 네 종류로 분류한다.
 
     C3: application/xhtml+xml 추가, CT 누락·text/plain 시 본문 앞 500자 스니핑으로 html 추정.
     C4: 상태코드와 무관하게 CT·확장자·본문으로만 판정 — 비200 응답도 본문 파싱 대상이 됨.
     C-1: CT 누락·text/plain 시 { / [ 시작이면 json.loads 검증 후 json 분류 (오분류 방지).
+    C-2: html/script/json으로 특정되지 않은 모든 CT(application/xml·octet-stream 등 포함)에서
+         본문 앞부분 스니핑을 시도해, 서버가 CT를 잘못 내려주는 경우의 본문 폐기를 줄인다.
     """
     ct = resp.headers.get("content-type", "").lower()
     if "text/html" in ct or "application/xhtml+xml" in ct:
         return "html"
     if any(kw in ct for kw in _SCRIPT_CT_KEYWORDS) or final_url.split("?")[0].endswith(".js"):
         return "script"
-    # CT가 없거나 text/plain인 경우 본문 앞부분 스니핑으로 html/json 추정
-    if not ct or "text/plain" in ct:
-        head = resp.text[:500].lstrip()
-        if head.lower().startswith(("<!doctype html", "<html", "<?xml")):
-            return "html"
-        if head.startswith(("{", "[")):
-            try:
-                _json.loads(resp.text)  # 진짜 JSON일 때만 분류 — 오분류·불필요 본문 보관 방지
-                return "json"
-            except Exception:
-                pass
-    # JSON API 응답
     if "application/json" in ct:
         return "json"
+    # 위 CT로 특정되지 않은 모든 경우 본문 앞부분 스니핑으로 html/json 추정 (C-2)
+    head = resp.text[:500].lstrip()
+    if _HTML_SNIFF_RE.match(head):
+        return "html"
+    if head.startswith(("{", "[")):
+        try:
+            _json.loads(resp.text)  # 진짜 JSON일 때만 분류 — 오분류·불필요 본문 보관 방지
+            return "json"
+        except Exception:
+            pass
     return "other"
 
 
@@ -123,7 +153,7 @@ def _fetch_sitemap_urls(
         for m in re.finditer(r'<loc>\s*(https?://[^<\s]+)\s*</loc>', text, re.IGNORECASE):
             abs_url, _ = urldefrag(m.group(1).strip())
             parsed = urlparse(abs_url)
-            if parsed.netloc == base_netloc and not _is_logout_path(parsed.path):
+            if _same_site(parsed.netloc, base_netloc) and not _is_logout_path(parsed.path):
                 result.append(abs_url)
     except Exception:
         pass
@@ -167,7 +197,7 @@ def _seed_from_robots_sitemap(
                         _fetch_sitemap_urls(abs_url, base_netloc, timeout,
                                             cookies, proxies, headers)
                     )
-                elif (parsed.netloc == base_netloc
+                elif (_same_site(parsed.netloc, base_netloc)
                       and not _is_logout_path(parsed.path)):
                     seeds.append(abs_url)
     except Exception:
@@ -200,7 +230,7 @@ def _extract_urls_from_json(body: str, base_url: str, base_netloc: str) -> List[
             try:
                 abs_url, _ = urldefrag(urljoin(base_url, obj))
                 parsed = urlparse(abs_url)
-                if parsed.netloc == base_netloc and not _is_logout_path(parsed.path):
+                if _same_site(parsed.netloc, base_netloc) and not _is_logout_path(parsed.path):
                     result.append(abs_url)
             except Exception:
                 pass
@@ -232,7 +262,7 @@ def _extract_links_from_body(body: str, final_url: str,
         if base_m:
             candidate = _html_unescape(base_m.group(1))
             abs_base, _ = urldefrag(urljoin(final_url, candidate))
-            if urlparse(abs_base).netloc == base_netloc:
+            if _same_site(urlparse(abs_base).netloc, base_netloc):
                 base_url = abs_base
 
     def _add(raw: str) -> None:
@@ -242,21 +272,26 @@ def _extract_links_from_body(body: str, final_url: str,
         raw = _html_unescape(raw).strip()
         if not raw or raw.startswith(('javascript:', 'mailto:', 'tel:', 'data:', '#')):
             return
+        # 백틱 템플릿 리터럴의 ${...} 보간 값은 실제 URL이 아니므로 큐잉하지 않는다 (C6 백틱 확장 부작용 차단)
+        if '${' in raw:
+            return
         abs_url, _ = urldefrag(urljoin(base_url, raw))
         parsed = urlparse(abs_url)
-        if parsed.netloc == base_netloc and not _is_logout_path(parsed.path):
+        if _same_site(parsed.netloc, base_netloc) and not _is_logout_path(parsed.path):
             links.append(abs_url)
 
     if kind == "html":
         # href/src/action — 따옴표 있는 경우
-        for attr_val in re.findall(
-            r'(?:href|src|action)=["\']([^"\']+)["\']', body, re.IGNORECASE
+        # C-4: 등호 앞뒤 공백·줄바꿈 허용 + 여는 따옴표와 짝이 맞는 반대 따옴표까지 캡처
+        #      (예: href="/x?n=O'Brien" 에서 값 내부 작은따옴표로 잘리지 않도록 역참조 사용)
+        for _quote, attr_val in re.findall(
+            r'(?:href|src|action)\s*=\s*(["\'])(.*?)\1', body, re.IGNORECASE
         ):
             _add(attr_val)
 
-        # href/src/action — 따옴표 없는 경우 (href=/path 형태, C5)
+        # href/src/action — 따옴표 없는 경우 (href=/path 형태, C5/C-4)
         for attr_val in re.findall(
-            r'(?:href|src|action)=([^"\'>\s]+)', body, re.IGNORECASE
+            r'(?:href|src|action)\s*=\s*([^"\'>\s]+)', body, re.IGNORECASE
         ):
             _add(attr_val)
 
@@ -281,6 +316,36 @@ def _extract_links_from_body(body: str, final_url: str,
             m = re.search(r'url\s*=\s*([^\s"\'>;]+)', content_val, re.IGNORECASE)
             if m:
                 _add(m.group(1))
+
+        # C-5: GET <form>의 action + 필드명을 조합해 결과 페이지 URL을 큐에 추가한다.
+        # (입력 포인트 자체는 parse_input_points가 별도로 수집 — 여기는 링크 발견 목적)
+        for form_m in re.finditer(
+            r'<form\b([^>]*)>(.*?)</form>', body, re.IGNORECASE | re.DOTALL
+        ):
+            attrs_str, form_body = form_m.group(1), form_m.group(2)
+            method_m = re.search(r'\bmethod\s*=\s*["\']?(\w+)', attrs_str, re.IGNORECASE)
+            if method_m and method_m.group(1).upper() != "GET":
+                continue
+            action_m = re.search(r'\baction\s*=\s*["\']([^"\']+)["\']', attrs_str, re.IGNORECASE)
+            action = _html_unescape(action_m.group(1)).strip() if action_m else ""
+
+            field_names: List[str] = []
+            for field_m in re.finditer(
+                r'<(?:input|select|textarea)\b([^>]*)', form_body, re.IGNORECASE
+            ):
+                field_attrs = field_m.group(1)
+                type_m = re.search(r'\btype\s*=\s*["\']?(\w+)', field_attrs, re.IGNORECASE)
+                ftype = type_m.group(1).lower() if type_m else "text"
+                if ftype in ("submit", "button", "image", "reset", "file"):
+                    continue
+                name_m = re.search(r'\bname\s*=\s*["\']([^"\']+)["\']', field_attrs, re.IGNORECASE)
+                if name_m:
+                    field_names.append(name_m.group(1))
+
+            if field_names:
+                qs = "&".join(f"{n}=" for n in field_names)
+                sep = "&" if "?" in action else "?"
+                _add(f"{action}{sep}{qs}")
 
         # C6: <script> 블록 · on* 인라인 핸들러에서 JS URL 패턴으로 큐 확장
         for block_m in re.finditer(
@@ -330,7 +395,7 @@ def _make_route_handler(base_netloc: str,
         # 비-GET 차단 (C2) — GET 로그아웃도 abort (세션 보호)
         if method != "GET" or _is_logout_path(parsed.path):
             # POST: 같은 도메인이면 입력 포인트로 기록(전송은 차단)
-            if method == "POST" and parsed.netloc == base_netloc:
+            if method == "POST" and _same_site(parsed.netloc, base_netloc):
                 key = ("POST", url)
                 if key not in xhr_visited:
                     xhr_visited.add(key)
@@ -360,7 +425,7 @@ def _make_route_handler(base_netloc: str,
             return
 
         # GET: 같은 도메인 + 쿼리 파라미터 있으면 입력 포인트로 기록
-        if parsed.netloc == base_netloc:
+        if _same_site(parsed.netloc, base_netloc):
             qs = parse_qs(parsed.query, keep_blank_values=True)
             if qs:
                 key = ("GET", url)
@@ -512,9 +577,14 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
                 continue
 
             # C9: 서명(path + 파라미터명 집합) 기준 방문 상한 3회
+            # 단, 파라미터명이 페이지네이션 성격(_PAGINATION_PARAMS)이면 상한을 적용하지 않는다.
+            # (예: ?page=1..N 뒤에만 등장하는 링크도 max_pages 한도 내에서 발견 가능해야 함.
+            #  전체 방문 수는 while 조건의 max_pages로 계속 상한된다.)
             _p = urlparse(url)
-            sig: Tuple[str, frozenset] = (_p.path, frozenset(parse_qs(_p.query).keys()))
-            if sig_count.get(sig, 0) >= 3:
+            _param_names = frozenset(parse_qs(_p.query).keys())
+            sig: Tuple[str, frozenset] = (_p.path, _param_names)
+            is_pagination_sig = bool({n.lower() for n in _param_names} & _PAGINATION_PARAMS)
+            if not is_pagination_sig and sig_count.get(sig, 0) >= 3:
                 visited.add(url)  # 재평가·재적재 방지
                 continue
 
@@ -558,7 +628,7 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
 
             # 리다이렉트 후 도메인 확인 — 다르면 이 페이지는 수집하지 않음
             final_url = resp.url
-            if urlparse(final_url).netloc != base_netloc:
+            if not _same_site(urlparse(final_url).netloc, base_netloc):
                 continue
 
             path = urlparse(final_url).path or "/"

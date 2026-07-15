@@ -1,0 +1,29 @@
+{
+  "paths": [
+    {"path": "/elmah.axd",                        "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/trace.axd",                        "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/glimpse.axd",                      "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/mini-profiler-resources/results",  "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/web.config",                       "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/appsettings.json",                 "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/appsettings.Development.json",     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/appsettings.Production.json",      "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/connectionStrings.config",         "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/App_Data/",                        "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/App_Code/",                        "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/bin/",                             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/admin/",                           "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/Account/Login",                    "severity": "LOW",    "category": "default_resource"},
+    {"path": "/__browserLink/",                   "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/ScriptResource.axd",               "severity": "LOW",    "category": "default_resource"},
+    {"path": "/WebResource.axd",                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/_framework/blazor.boot.json",      "severity": "LOW",    "category": "default_resource"},
+    {"path": "/api/",                             "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/api/values",                       "severity": "LOW",    "category": "default_resource"},
+    {"path": "/healthz",                          "severity": "LOW",    "category": "status_page"},
+    {"path": "/swagger/",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/swagger/v1/swagger.json",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/hangfire",                         "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/hangfire/dashboard",               "severity": "MEDIUM", "category": "admin_console"}
+  ]
+}

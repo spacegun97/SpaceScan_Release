@@ -1,0 +1,32 @@
+{
+  "paths": [
+    {"path": "/phpinfo.php",                      "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/info.php",                         "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/test.php",                         "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/php-info.php",                     "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/i.php",                            "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/pi.php",                           "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/phpMyAdmin/",                      "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/phpmyadmin/",                      "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/phpmyadmin/setup/index.php",       "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/pma/",                             "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/myadmin/",                         "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/dbadmin/",                         "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/adminer/",                         "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/adminer.php",                      "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/composer.json",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/composer.lock",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/vendor/",                          "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/config.php",                       "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/config.inc.php",                   "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/db.php",                           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/database.php",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-config.php.bak",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/phpunit.xml",                      "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/index.php.bak",                    "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/php.ini",                          "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/php-fpm.conf",                     "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/error_log",                        "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/php_errors.log",                   "severity": "MEDIUM", "category": "sensitive_file"}
+  ]
+}

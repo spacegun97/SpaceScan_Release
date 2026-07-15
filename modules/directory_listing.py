@@ -72,8 +72,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
                                 allow_redirects=True, cookies=cookies,
                                 proxies=proxies, headers=auth_headers or {})
 
-            # 리다이렉트 후 도메인이 달라지면 제외
-            if urlparse(resp.url).netloc != base_netloc:
+            # 리다이렉트 후 도메인이 달라지면 제외 (www 유무·대소문자는 동일 사이트로 취급)
+            if not _crawl._same_site(urlparse(resp.url).netloc, base_netloc):
                 continue
 
             if resp.status_code == 200:
@@ -93,7 +93,10 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
                     })
 
         except requests.exceptions.ConnectionError:
+            # 조기 종료 시에도 지금까지 수집한 finding은 보존한다
             result["error"] = "Connection refused"
+            result["findings"] = findings
+            result["crawl_events"] = [(p["visited_at"], p["url"]) for p in pages]
             return result
         except Exception:
             continue
