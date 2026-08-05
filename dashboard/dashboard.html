@@ -250,6 +250,8 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
 .mrg-per-file .skipped { color:var(--critical); }
 .mrg-per-file .new-cols { color:var(--green); font-size:10px; }
 .mrg-warn { font-size:12px; color:var(--medium); background:rgba(251,191,36,.08); border:1px solid rgba(251,191,36,.2); border-radius:7px; padding:10px 14px; margin-top:10px; }
+.jsa-mermaid-wrap { overflow:auto; background:var(--surf2); border:1px solid var(--border); border-radius:8px; padding:18px; margin-top:12px; min-height:200px; }
+.jsa-mermaid-wrap svg { max-width:100%; height:auto; display:block; margin:0 auto; }
 </style>
 </head>
 <body>
@@ -269,6 +271,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
       <div class="nav-item" onclick="showPage('extract')"><span>💉</span> 데이터 추출 (SQLi)</div>
       <div class="nav-lbl">UTILITY</div>
       <div class="nav-item" onclick="showPage('merge')"><span>📂</span> 엑셀 취합</div>
+      <div class="nav-item" onclick="showPage('jsanalysis')"><span>🔀</span> JS 데이터플로우 분석</div>
     </nav>
     <div class="sidebar-foot">v1.0 · Authorized use only</div>
   </aside>
@@ -938,13 +941,222 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
 
       </div><!-- /pg-merge -->
 
+      <div class="pg" id="pg-jsanalysis">
+
+        <!-- 파일 업로드 카드 -->
+        <div class="card">
+          <div class="card-title">JS / HTML / XFDL / XADL / XJS / XML 업로드</div>
+
+          <!-- 드래그&드롭 영역 -->
+          <div class="mrg-dropzone" id="jsa-dropzone"
+               ondragover="jsaDragOver(event)" ondragleave="jsaDragLeave(event)" ondrop="jsaDrop(event)"
+               onclick="document.getElementById('jsa-file-input').click()">
+            <div class="mrg-dropzone-icon">🔀</div>
+            <div class="mrg-dropzone-lbl">파일을 여기에 끌어다 놓거나 <span>클릭하여 선택</span></div>
+            <div class="mrg-dropzone-sub">.js / .html / .htm / .xfdl / .xadl / .xjs / .xml — 여러 파일 동시 선택 가능 (완전 오프라인 분석, 외부 요청 없음)</div>
+          </div>
+          <input type="file" id="jsa-file-input" multiple accept=".js,.html,.htm,.xfdl,.xadl,.xjs,.xml" style="display:none" onchange="jsaFilesAdded(this.files)">
+
+          <!-- 선택된 파일 목록 -->
+          <div class="mrg-file-list" id="jsa-file-list"></div>
+
+          <!-- 분석 시작 버튼 -->
+          <div class="form-row" style="margin-top:18px; align-items:flex-end">
+            <button class="btn-scan" id="jsa-btn" onclick="jsaStart()" style="white-space:nowrap">
+              <span>🔎</span> 분석 시작
+            </button>
+            <button class="btn-cancel" id="jsa-reset-btn" onclick="jsaReset()" style="white-space:nowrap">
+              ↺ 초기화
+            </button>
+          </div>
+
+          <!-- 에러 메시지 -->
+          <div class="ext-error" id="jsa-error" hidden></div>
+        </div>
+
+        <!-- 분석 결과 요약 카드 -->
+        <div class="card" id="jsa-summary-card" hidden>
+          <div class="card-title">분석 결과 요약</div>
+
+          <div class="mrg-stat-row">
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="jsa-stat-functions">0</div>
+              <div class="mrg-stat-lbl">발견된 함수 수</div>
+            </div>
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="jsa-stat-files">0</div>
+              <div class="mrg-stat-lbl">처리된 파일</div>
+            </div>
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="jsa-stat-errors">0</div>
+              <div class="mrg-stat-lbl">파싱 오류</div>
+            </div>
+          </div>
+
+          <!-- 파싱 경고 -->
+          <div class="mrg-warn" id="jsa-error-warn" hidden></div>
+
+          <!-- 파일별 처리 현황 -->
+          <div class="card-title" style="font-size:13px; margin-top:20px; margin-bottom:4px">파일별 처리 현황</div>
+          <table class="mrg-per-file" id="jsa-per-file-table">
+            <thead>
+              <tr>
+                <th>파일명</th>
+                <th>형식</th>
+                <th>유닛 수</th>
+                <th>외부 스크립트 참조</th>
+                <th>상태</th>
+              </tr>
+            </thead>
+            <tbody id="jsa-per-file-body"></tbody>
+          </table>
+
+          <!-- 파일 간 의존 관계 (import/require/include/script src) -->
+          <div class="card-title" style="font-size:13px; margin-top:20px; margin-bottom:4px">파일 간 의존 관계</div>
+          <div class="mrg-stat-row">
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="jsa-stat-mod-edges">0</div>
+              <div class="mrg-stat-lbl">해소된 관계</div>
+            </div>
+            <div class="mrg-stat-box">
+              <div class="mrg-stat-num" id="jsa-stat-mod-unresolved">0</div>
+              <div class="mrg-stat-lbl">미해소 참조</div>
+            </div>
+          </div>
+          <div class="mrg-warn" id="jsa-mod-unresolved-warn" hidden></div>
+          <table class="mrg-per-file" id="jsa-mod-edges-table" hidden>
+            <thead>
+              <tr>
+                <th>파일</th>
+                <th>관계</th>
+                <th>대상 파일</th>
+                <th>지정자</th>
+              </tr>
+            </thead>
+            <tbody id="jsa-mod-edges-body"></tbody>
+          </table>
+          <div class="ext-action-row" style="margin-top:10px">
+            <button class="btn-act" id="jsa-mod-graph-btn" onclick="jsaToggleModuleGraph()">🔀 의존 관계 그래프로 보기</button>
+          </div>
+          <div class="jsa-mermaid-wrap" id="jsa-mod-mermaid-wrap" hidden>
+            <div id="jsa-mod-mermaid"></div>
+          </div>
+        </div>
+
+        <!-- 함수 검색 카드 -->
+        <div class="card" id="jsa-search-card" hidden>
+          <div class="card-title">함수 검색</div>
+          <div class="form-row">
+            <div class="fg">
+              <label>파일명</label>
+              <input id="jsa-q-file" class="finput" type="text" placeholder="예: login.js" oninput="jsaSearch()">
+            </div>
+            <div class="fg">
+              <label>함수명</label>
+              <input id="jsa-q-name" class="finput" type="text" placeholder="예: handleClick" oninput="jsaSearch()">
+            </div>
+          </div>
+          <div class="ext-list" id="jsa-search-list">
+            <div class="ext-list-empty">분석이 완료되면 함수 목록이 표시됩니다.</div>
+          </div>
+        </div>
+
+        <!-- 함수 상세 카드 -->
+        <div class="card" id="jsa-detail-card" hidden>
+          <div class="card-title" id="jsa-detail-title">함수 상세</div>
+
+          <!-- 뷰 전환: 테이블 / 그래프 -->
+          <div class="ext-action-row">
+            <button class="btn-act primary" id="jsa-view-table-btn" onclick="jsaSwitchView('table')">📋 테이블 뷰</button>
+            <button class="btn-act" id="jsa-view-graph-btn" onclick="jsaSwitchView('graph')">🔀 그래프 뷰</button>
+          </div>
+
+          <!-- 테이블 뷰 -->
+          <div id="jsa-view-table">
+            <div class="fgrid" style="margin-bottom:14px">
+              <div>
+                <div class="dlbl">파일 / 위치</div>
+                <div class="dval" id="jsa-d-loc">-</div>
+              </div>
+              <div>
+                <div class="dlbl">매개변수 (IN)</div>
+                <div class="mrg-col-list" id="jsa-d-params"></div>
+              </div>
+            </div>
+
+            <div class="card-title" style="font-size:13px">내부 처리 (지역변수 정의)</div>
+            <table class="mrg-per-file" id="jsa-d-defs-table">
+              <thead><tr><th>변수</th><th>식</th><th>의존 변수</th><th>라인</th></tr></thead>
+              <tbody id="jsa-d-defs-body"></tbody>
+            </table>
+
+            <div class="card-title" style="font-size:13px; margin-top:20px">출력 (OUT) — return</div>
+            <table class="mrg-per-file" id="jsa-d-returns-table">
+              <thead><tr><th>반환식</th><th>의존 변수</th><th>라인</th></tr></thead>
+              <tbody id="jsa-d-returns-body"></tbody>
+            </table>
+
+            <div class="card-title" style="font-size:13px; margin-top:20px">출력 (OUT) — 외부 호출</div>
+            <table class="mrg-per-file" id="jsa-d-calls-table">
+              <thead><tr><th>호출 대상</th><th>호출식</th><th>인자별 의존 변수</th><th>라인</th></tr></thead>
+              <tbody id="jsa-d-calls-body"></tbody>
+            </table>
+
+            <div class="card-title" style="font-size:13px; margin-top:20px">이 함수를 호출하는 함수 (called by)</div>
+            <div class="ext-list" id="jsa-d-calledby-list"></div>
+          </div>
+
+          <!-- 그래프 뷰 -->
+          <div id="jsa-view-graph" hidden>
+            <div class="ext-action-row">
+              <button class="btn-act primary" id="jsa-graph-call-btn" onclick="jsaLoadGraph('call')">호출 그래프</button>
+              <button class="btn-act" id="jsa-graph-flow-btn" onclick="jsaLoadGraph('dataflow')">데이터플로우 그래프</button>
+            </div>
+            <div class="ext-hint">호출 그래프: 선택한 함수 및 이를 호출/피호출하는 함수 관계(import/require/include로 연결된 다른 파일 함수 포함). 데이터플로우: 이 함수 내부 입력→처리→출력 흐름.</div>
+
+            <!-- 호출 그래프 전용 컨트롤: 탐색 깊이 / 파일 간 호출만 표시 -->
+            <div class="form-row" id="jsa-graph-call-controls" style="align-items:flex-end; margin-top:10px">
+              <div class="fg" style="flex:0 0 160px">
+                <label>탐색 깊이</label>
+                <select id="jsa-graph-depth" class="finput" onchange="jsaLoadGraph('call')">
+                  <option value="1" selected>1 (직접 호출)</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                </select>
+              </div>
+              <label class="mtoggle" style="display:inline-flex;flex-shrink:0">
+                <input type="checkbox" id="jsa-graph-cross-only">
+                <div class="chk"></div>
+                <span class="mlabel">파일 간 호출만 표시</span>
+              </label>
+            </div>
+
+            <!-- 데이터플로우 그래프 전용 컨트롤: 호출 대상 함수 내부까지 전개 -->
+            <div class="form-row" id="jsa-graph-flow-controls" style="align-items:flex-end; margin-top:10px" hidden>
+              <label class="mtoggle" style="display:inline-flex;flex-shrink:0">
+                <input type="checkbox" id="jsa-graph-expand">
+                <div class="chk"></div>
+                <span class="mlabel">호출한 함수 내부까지 전개 (파일 경계 포함)</span>
+              </label>
+            </div>
+
+            <div class="jsa-mermaid-wrap" id="jsa-mermaid-wrap">
+              <div id="jsa-mermaid"></div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /pg-jsanalysis -->
+
       <!-- ── RECON PAGE (정보수집 OSINT) ── -->
       <div class="pg" id="pg-recon">
 
         <div class="card">
           <div class="card-title">정보수집 (OSINT) — 패시브 정찰</div>
           <div style="color:var(--dim);font-size:12px;margin-bottom:18px;line-height:1.6">
-            대상 도메인·서브도메인으로는 어떤 요청도 보내지 않습니다. crt.sh / Wayback Machine / 공용 DNS 리졸버(8.8.8.8, 1.1.1.1) / Shodan InternetDB — 4개 제3자 소스만 조회하는 순수 패시브 정찰입니다.
+            대상 도메인·서브도메인으로는 어떤 요청도 보내지 않습니다. crt.sh / Wayback Machine(CDX + robots·sitemap 아카이브) / Common Crawl / urlscan.io / 공용 DNS 리졸버(8.8.8.8, 1.1.1.1) / Shodan InternetDB — 6개 제3자 소스만 조회하는 순수 패시브 정찰입니다.
           </div>
 
           <div class="form-row">
@@ -968,6 +1180,9 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
               <div class="mod-cat-row">
                 <label class="mtoggle on"><input type="checkbox" value="crtsh" checked><div class="chk"></div><span class="mlabel">crt.sh (CT 로그 — 서브도메인/인증서)</span></label>
                 <label class="mtoggle on"><input type="checkbox" value="wayback" checked><div class="chk"></div><span class="mlabel">Wayback Machine (아카이브 URL/서브도메인)</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="commoncrawl" checked><div class="chk"></div><span class="mlabel">Common Crawl (아카이브 URL/서브도메인, 무키)</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="urlscan" checked><div class="chk"></div><span class="mlabel">urlscan.io (관측 URL/서브도메인, 무키)</span></label>
+                <label class="mtoggle on"><input type="checkbox" value="archivepaths" checked><div class="chk"></div><span class="mlabel">아카이브 robots.txt/sitemap.xml 파싱</span></label>
                 <label class="mtoggle on"><input type="checkbox" value="dns" checked><div class="chk"></div><span class="mlabel">공용 DNS 리졸버 (레코드 조회)</span></label>
                 <label class="mtoggle on"><input type="checkbox" value="internetdb" checked><div class="chk"></div><span class="mlabel">Shodan InternetDB (열린 포트, 무키)</span></label>
               </div>
@@ -998,7 +1213,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-subs">0</div><div class="mrg-stat-lbl">서브도메인</div></div>
             <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-alive">0</div><div class="mrg-stat-lbl">DNS 생존</div></div>
             <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-certs">0</div><div class="mrg-stat-lbl">인증서</div></div>
-            <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-urls">0</div><div class="mrg-stat-lbl">아카이브 URL</div></div>
+            <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-urls">0</div><div class="mrg-stat-lbl">수집 URL</div></div>
             <div class="mrg-stat-box"><div class="mrg-stat-num" id="recon-stat-ports">0</div><div class="mrg-stat-lbl">포트 확인 IP</div></div>
           </div>
 
@@ -1013,6 +1228,12 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
           <table class="mrg-per-file" id="recon-sub-table">
             <thead><tr><th>호스트</th><th>생존</th><th>발견 소스</th></tr></thead>
             <tbody id="recon-sub-body"></tbody>
+          </table>
+
+          <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">수집 URL — 서브도메인별</div>
+          <table class="mrg-per-file" id="recon-url-table">
+            <thead><tr><th>서브도메인</th><th>URL</th><th>발견 소스</th></tr></thead>
+            <tbody id="recon-url-body"></tbody>
           </table>
 
           <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">열린 포트 (Shodan InternetDB)</div>
@@ -1134,6 +1355,9 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
   </div>
 </div>
 
+<!-- mermaid 로컬 번들 (오프라인, CDN 미사용) — JS 데이터플로우 분석 그래프 뷰에서 사용 -->
+<script src="/static/vendor/mermaid.min.js"></script>
+
 <script>
 let currentJobId = null;
 let pollTimer    = null;
@@ -1156,6 +1380,14 @@ document.querySelectorAll('.mtoggle').forEach(lbl => {
     // 백엔드 확장자 필터 토글 시 백엔드 언어 선택 영역 활성/비활성 동기화
     if (cb.id === 'inp-backend-filter') {
       _syncBackendLangSection();
+    }
+    // JS 분석 — 호출 그래프 "파일 간 호출만 표시" 토글 시 그래프 재조회
+    if (cb.id === 'jsa-graph-cross-only') {
+      jsaLoadGraph('call');
+    }
+    // JS 분석 — 데이터플로우 "호출 대상 함수 내부까지 전개" 토글 시 그래프 재조회
+    if (cb.id === 'jsa-graph-expand') {
+      jsaLoadGraph('dataflow');
     }
   });
 });
@@ -1181,9 +1413,9 @@ function showPage(name) {
   document.querySelectorAll('.pg').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('pg-' + name).classList.add('active');
-  const idx = ['recon','scan','history','extract','merge'].indexOf(name);
+  const idx = ['recon','scan','history','extract','merge','jsanalysis'].indexOf(name);
   document.querySelectorAll('.nav-item')[idx]?.classList.add('active');
-  document.getElementById('topbar-title').textContent = {scan:'스캔 실행', history:'스캔 히스토리', extract:'데이터 추출 (SQLi)', merge:'엑셀 취합', recon:'정보수집 (OSINT)'}[name];
+  document.getElementById('topbar-title').textContent = {scan:'스캔 실행', history:'스캔 히스토리', extract:'데이터 추출 (SQLi)', merge:'엑셀 취합', recon:'정보수집 (OSINT)', jsanalysis:'JS 데이터플로우 분석'}[name];
   if (name === 'history') loadHistory();
 }
 
@@ -1609,6 +1841,18 @@ let _reuseModalResolve= null;   // 재사용 확인 모달 Promise resolver
 let _searchResumeResolve = null; // 검색모드 이어받기 확인 모달 Promise resolver
 let _lastSearchHitsSig   = null; // 검색 결과 패널 중복 재렌더 방지 시그니처 (target|match|keyword|hits.length)
 
+// ── 상시 폴러 화면 동기화용 — 완료 시점 one-shot 렌더가 타이밍상 누락되는 경우를
+//    폴러(800ms)가 메꾸기 위한 "현재 활성 단계" + "마지막으로 그려진 데이터 시그니처" 추적.
+//    시그니처가 일치하면 폴러는 아무 것도 하지 않아 정상 흐름에는 개입하지 않는다.
+let extractActiveStep    = null;  // 현재 위저드 단계 — 'dbs'|'tables'|'cols'|'dump'|null
+let _dbListRenderedSig   = null;
+let _tblListRenderedKey  = null;  // 테이블 목록이 그려진 기준 DB
+let _tblListRenderedSig  = null;
+let _colListRenderedKey  = null;  // 컬럼 목록이 그려진 기준 db.table
+let _colListRenderedSig  = null;
+let _dumpRenderedKey     = null;  // 덤프 결과가 그려진 기준 db.table
+let _dumpRenderedSig     = null;
+
 // ── 입력 폼 토글 (method/technique/ctx_mode 변경 시 관련 영역 표시) ──
 function _bindExtractFormToggles() {
   const m = document.getElementById('ext-method');
@@ -1673,6 +1917,15 @@ function _resetExtractUI() {
   extractLoggedNames = new Set();
   extractLogSeeded = false;
   _lastSearchHitsSig = null;
+  // 폴러 동기화 시그니처 초기화 — 다음 세션에 이전 화면 흔적이 남지 않도록
+  extractActiveStep = null;
+  _dbListRenderedSig = null;
+  _tblListRenderedKey = null;
+  _tblListRenderedSig = null;
+  _colListRenderedKey = null;
+  _colListRenderedSig = null;
+  _dumpRenderedKey = null;
+  _dumpRenderedSig = null;
   const logEl = document.getElementById('ext-live-log');
   logEl.innerHTML = '(아직 추출된 이름 없음)';
   logEl.dataset.empty = 'true';
@@ -2110,6 +2363,7 @@ function _renderExtractStatus(j) {
     _renderExcelInfo(j);
     _renderLiveLog(j);
     _maybeRenderSearchResults(j);
+    _syncActiveView(j);
     return;
   }
 
@@ -2374,12 +2628,14 @@ async function extractStartWizard() {
   extractWizardMode = 'normal';
   document.getElementById('ext-search-panel').hidden = true; // 특수 검색모드 박스 숨김 (상호 배타)
   document.getElementById('ext-wizard').hidden = false;
-  await _loadDbList();
+  // 로딩 시작 전에 활성 단계부터 기록 — 로딩 중(await) 폴러가 'dbs' 단계를 동기화 대상으로 인식하도록 함
   _extractGotoStep('dbs');
+  await _loadDbList();
 }
 
 // ── 위저드 단계 전환 ──
 function _extractGotoStep(step) {
+  extractActiveStep = step;  // 폴러가 동기화할 활성 단계 기록
   ['dbs', 'tables', 'cols', 'dump'].forEach(s => {
     const el = document.getElementById('ext-step-' + s);
     if (el) el.classList.toggle('show', s === step);
@@ -2514,8 +2770,44 @@ async function _waitForExtracted(predicate, maxMs = 300000) {
 }
 function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// ── 활성 위저드 단계를 최신 데이터와 동기화 (상시 폴러 800ms 주기 호출) ──
+// one-shot 렌더(_waitForExtracted 완료 시점 렌더)가 타이밍상 결과를 놓쳐도
+// 폴러가 "화면에 그려진 시그니처"와 "실제 데이터"를 비교해 다를 때만 다시 그린다.
+// 일치하면 아무 것도 하지 않으므로 정상 흐름(one-shot 렌더 성공)에는 개입하지 않는다.
+function _syncActiveView(j) {
+  if (document.getElementById('ext-wizard').hidden) return;
+  const extKey = _extKey();
+  const ext = j[extKey] || {};
+
+  if (extractActiveStep === 'dbs') {
+    const dbs = ext.databases || [];
+    if (JSON.stringify(dbs) !== _dbListRenderedSig) _renderDbList(dbs);
+  } else if (extractActiveStep === 'tables' && extractCurrentDb) {
+    const tbls = (ext.tables && ext.tables[extractCurrentDb]) || [];
+    if (extractCurrentDb !== _tblListRenderedKey || JSON.stringify(tbls) !== _tblListRenderedSig) {
+      _renderTblList(tbls);
+    }
+  } else if (extractActiveStep === 'cols' && extractCurrentDb && extractCurrentTbl) {
+    const key = `${extractCurrentDb}.${extractCurrentTbl}`;
+    const cols = (ext.columns && ext.columns[key]) || [];
+    if (key !== _colListRenderedKey || JSON.stringify(cols) !== _colListRenderedSig) {
+      _renderColList(cols);
+    }
+  } else if (extractActiveStep === 'dump' && extractCurrentDb && extractCurrentTbl) {
+    const key = `${extractCurrentDb}.${extractCurrentTbl}`;
+    const dump = ext.dumps && ext.dumps[key];
+    if (dump) {
+      const sig = `${(dump.rows || []).length}|${(dump.columns || []).join(',')}`;
+      if (key !== _dumpRenderedKey || sig !== _dumpRenderedSig) {
+        _renderDumpTable(dump.columns, dump.rows);
+      }
+    }
+  }
+}
+
 // ── DB 리스트 렌더 (XSS-safe textContent) ──
 function _renderDbList(dbs) {
+  _dbListRenderedSig = JSON.stringify(dbs || []);
   const list = document.getElementById('ext-db-list');
   list.innerHTML = '';
   if (!dbs || !dbs.length) {
@@ -2539,6 +2831,8 @@ function _renderDbList(dbs) {
 
 // ── 테이블 리스트 렌더 ──
 function _renderTblList(tbls) {
+  _tblListRenderedKey = extractCurrentDb;
+  _tblListRenderedSig = JSON.stringify(tbls || []);
   const list = document.getElementById('ext-tbl-list');
   list.innerHTML = '';
   if (!tbls || !tbls.length) {
@@ -2563,6 +2857,8 @@ function _renderTblList(tbls) {
 
 // ── 컬럼 리스트 렌더 (선택 가능 — toggle) ──
 function _renderColList(cols) {
+  _colListRenderedKey = `${extractCurrentDb}.${extractCurrentTbl}`;
+  _colListRenderedSig = JSON.stringify(cols || []);
   const list = document.getElementById('ext-col-list');
   list.innerHTML = '';
   if (!cols || !cols.length) {
@@ -2840,6 +3136,8 @@ async function extractSearchDrilldown(hit) {
 
 // ── Dump 결과 표 렌더 (XSS-safe textContent) ──
 function _renderDumpTable(cols, rows) {
+  _dumpRenderedKey = `${extractCurrentDb}.${extractCurrentTbl}`;
+  _dumpRenderedSig = `${(rows || []).length}|${(cols || []).join(',')}`;
   const wrap  = document.getElementById('ext-dump-result-wrap');
   const thead = document.getElementById('ext-dump-thead');
   const tbody = document.getElementById('ext-dump-tbody');
@@ -3275,6 +3573,466 @@ function mrgReset() {
   document.getElementById('mrg-result-card').hidden = true;
 }
 
+// ── JS/HTML/XFDL 데이터플로우 분석 ────────────────────────────────────────────
+let _jsaFiles = [];         // 선택된 File 객체 배열
+let _jsaAnalysisId = null;  // 서버 분석 결과 캐시 id (analyze 응답)
+let _jsaFuncIndex = {};     // id → {name, file} — search 응답에서 누적, called_by 이름 표시용
+let _jsaCurrentFunc = null; // 현재 상세 카드에 표시 중인 함수 레코드
+let _jsaMermaidReady = false;
+
+function _jsaRenderFileList() {
+  const list = document.getElementById('jsa-file-list');
+  list.innerHTML = '';
+  _jsaFiles.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.className = 'mrg-file-item';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'mrg-file-name';
+    nameSpan.title = f.name;
+    nameSpan.textContent = f.name;
+
+    const sizeSpan = document.createElement('span');
+    sizeSpan.className = 'mrg-file-size';
+    sizeSpan.textContent = `${(f.size / 1024).toFixed(1)} KB`;
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'mrg-file-del';
+    delBtn.title = '제거';
+    delBtn.textContent = '✕';
+    delBtn.onclick = () => jsaRemoveFile(i);
+
+    item.appendChild(nameSpan);
+    item.appendChild(sizeSpan);
+    item.appendChild(delBtn);
+    list.appendChild(item);
+  });
+}
+
+function jsaFilesAdded(fileList) {
+  const existing = new Set(_jsaFiles.map(f => f.name));
+  Array.from(fileList).forEach(f => {
+    if (!existing.has(f.name)) {
+      _jsaFiles.push(f);
+      existing.add(f.name);
+    }
+  });
+  _jsaRenderFileList();
+  document.getElementById('jsa-file-input').value = '';
+}
+
+function jsaRemoveFile(idx) {
+  _jsaFiles.splice(idx, 1);
+  _jsaRenderFileList();
+}
+
+function jsaDragOver(e) { e.preventDefault(); document.getElementById('jsa-dropzone').classList.add('over'); }
+function jsaDragLeave(e) { document.getElementById('jsa-dropzone').classList.remove('over'); }
+function jsaDrop(e) { e.preventDefault(); document.getElementById('jsa-dropzone').classList.remove('over'); jsaFilesAdded(e.dataTransfer.files); }
+
+async function jsaStart() {
+  const errEl = document.getElementById('jsa-error');
+  errEl.hidden = true;
+
+  if (_jsaFiles.length === 0) {
+    errEl.textContent = '분석할 파일을 선택하세요.';
+    errEl.hidden = false;
+    return;
+  }
+
+  const btn = document.getElementById('jsa-btn');
+  const resetBtn = document.getElementById('jsa-reset-btn');
+  btn.disabled = true;
+  resetBtn.disabled = true;
+  btn.textContent = '분석 중...';
+
+  const form = new FormData();
+  _jsaFiles.forEach(f => form.append('files', f));
+
+  try {
+    const res = await fetch('/api/jsanalysis/analyze', { method: 'POST', body: form });
+    const data = await res.json();
+
+    if (!res.ok) {
+      errEl.textContent = data.error || '서버 오류가 발생했습니다.';
+      errEl.hidden = false;
+      return;
+    }
+
+    _jsaAnalysisId = data.analysis_id;
+    _jsaFuncIndex = {};
+    _jsaCurrentFunc = null;
+    document.getElementById('jsa-detail-card').hidden = true;
+    _jsaRenderSummary(data);
+    await _jsaLoadModules();
+    document.getElementById('jsa-search-card').hidden = false;
+    document.getElementById('jsa-q-file').value = '';
+    document.getElementById('jsa-q-name').value = '';
+    await jsaSearch();  // 초기 전체 목록 표시
+  } catch (e) {
+    errEl.textContent = `요청 오류: ${e.message}`;
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+    resetBtn.disabled = false;
+    btn.innerHTML = '<span>🔎</span> 분석 시작';
+  }
+}
+
+// data.files/f.name/f.parse_errors는 업로드 파일명·서버 파싱 메시지 기반(악의적 값 가능) — textContent로만 삽입
+function _jsaRenderSummary(data) {
+  document.getElementById('jsa-stat-functions').textContent = data.function_count.toLocaleString();
+  const files = data.files || [];
+  document.getElementById('jsa-stat-files').textContent = files.filter(f => f.kind !== 'unsupported').length.toLocaleString();
+  const errCount = files.reduce((n, f) => n + (f.parse_errors ? f.parse_errors.length : 0), 0);
+  document.getElementById('jsa-stat-errors').textContent = errCount.toLocaleString();
+
+  const warnEl = document.getElementById('jsa-error-warn');
+  const allErrs = files.flatMap(f => (f.parse_errors || []).map(m => `${f.name}: ${m}`));
+  if (allErrs.length > 0) {
+    warnEl.textContent = `⚠ 파싱 경고 ${allErrs.length}건: ${allErrs.join(' / ')}`;
+    warnEl.hidden = false;
+  } else {
+    warnEl.hidden = true;
+  }
+
+  const tbody = document.getElementById('jsa-per-file-body');
+  tbody.innerHTML = '';
+  files.forEach(f => {
+    const tr = document.createElement('tr');
+
+    const tdName = document.createElement('td'); tdName.textContent = f.name;
+    const tdKind = document.createElement('td'); tdKind.textContent = f.kind;
+    const tdUnits = document.createElement('td'); tdUnits.textContent = f.units;
+
+    const tdExt = document.createElement('td');
+    tdExt.textContent = (f.external_refs && f.external_refs.length > 0) ? `${f.external_refs.length}개 (미조회)` : '—';
+
+    const tdStatus = document.createElement('td');
+    const span = document.createElement('span');
+    if (f.kind === 'unsupported' || (f.units === 0 && f.parse_errors && f.parse_errors.length > 0)) {
+      span.className = 'skipped';
+      span.textContent = (f.parse_errors && f.parse_errors[0]) || '오류';
+    } else if (f.parse_errors && f.parse_errors.length > 0) {
+      span.style.color = 'var(--medium)';
+      span.textContent = `부분 성공 (오류 ${f.parse_errors.length}건)`;
+    } else {
+      span.style.color = 'var(--green)';
+      span.textContent = '완료';
+    }
+    tdStatus.appendChild(span);
+
+    tr.appendChild(tdName); tr.appendChild(tdKind); tr.appendChild(tdUnits); tr.appendChild(tdExt); tr.appendChild(tdStatus);
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById('jsa-summary-card').hidden = false;
+}
+
+let _jsaModGraphShown = false;
+
+// 분석 완료 후 파일 간 import/require/include/script-src 의존 관계를 조회해 표시한다.
+async function _jsaLoadModules() {
+  if (!_jsaAnalysisId) return;
+  try {
+    const res = await fetch(`/api/jsanalysis/${_jsaAnalysisId}/modules`);
+    const data = await res.json();
+    if (!res.ok) return;
+    _jsaRenderModules(data);
+  } catch (_) {}
+}
+
+// data.edges/unresolved의 from/to/specifier/reason은 업로드 파일명 기반 값(악의적 값 가능) — textContent로만 삽입
+function _jsaRenderModules(data) {
+  const edges = data.edges || [];
+  const unresolved = data.unresolved || [];
+  document.getElementById('jsa-stat-mod-edges').textContent = edges.length.toLocaleString();
+  document.getElementById('jsa-stat-mod-unresolved').textContent = unresolved.length.toLocaleString();
+
+  const table = document.getElementById('jsa-mod-edges-table');
+  const body = document.getElementById('jsa-mod-edges-body');
+  body.innerHTML = '';
+  edges.forEach(e => {
+    const tr = document.createElement('tr');
+    const tdFrom = document.createElement('td'); tdFrom.textContent = e.from;
+    const tdKind = document.createElement('td'); tdKind.textContent = e.kind;
+    const tdTo = document.createElement('td'); tdTo.textContent = e.to;
+    const tdSpec = document.createElement('td'); tdSpec.textContent = e.specifier;
+    tr.appendChild(tdFrom); tr.appendChild(tdKind); tr.appendChild(tdTo); tr.appendChild(tdSpec);
+    body.appendChild(tr);
+  });
+  table.hidden = edges.length === 0;
+
+  const warnEl = document.getElementById('jsa-mod-unresolved-warn');
+  if (unresolved.length > 0) {
+    const msg = unresolved.slice(0, 20)
+      .map(u => `${u.from} → "${u.specifier}" (${u.kind}, ${u.reason})`).join(' / ');
+    warnEl.textContent = `⚠ 미해소 참조 ${unresolved.length}건: ${msg}`;
+    warnEl.hidden = false;
+  } else {
+    warnEl.hidden = true;
+  }
+
+  document.getElementById('jsa-mod-graph-btn').disabled = edges.length === 0;
+}
+
+// 파일 의존 관계 mermaid 그래프 표시/숨김 토글
+async function jsaToggleModuleGraph() {
+  const wrap = document.getElementById('jsa-mod-mermaid-wrap');
+  const btn = document.getElementById('jsa-mod-graph-btn');
+  if (_jsaModGraphShown) {
+    wrap.hidden = true;
+    _jsaModGraphShown = false;
+    btn.textContent = '🔀 의존 관계 그래프로 보기';
+    return;
+  }
+  if (!_jsaAnalysisId) return;
+
+  const container = document.getElementById('jsa-mod-mermaid');
+  container.textContent = '그래프 생성 중...';
+  wrap.hidden = false;
+  try {
+    const res = await fetch(`/api/jsanalysis/${_jsaAnalysisId}/graph?kind=module`);
+    const data = await res.json();
+    if (!res.ok) { container.textContent = data.error || '그래프 생성 오류'; return; }
+
+    await _jsaEnsureMermaid();
+    const renderId = 'jsa-mod-mmd-' + Date.now();
+    const { svg } = await mermaid.render(renderId, data.mermaid || 'graph LR\n  empty["표시할 데이터 없음"]');
+    container.innerHTML = svg;
+    _jsaModGraphShown = true;
+    btn.textContent = '🔀 의존 관계 그래프 숨기기';
+  } catch (e) {
+    container.textContent = `그래프 렌더링 오류: ${e.message}`;
+  }
+}
+
+async function jsaSearch() {
+  if (!_jsaAnalysisId) return;
+  const nameQ = document.getElementById('jsa-q-name').value.trim();
+  const fileQ = document.getElementById('jsa-q-file').value.trim();
+  const params = new URLSearchParams();
+  if (nameQ) params.set('name', nameQ);
+  if (fileQ) params.set('file', fileQ);
+
+  const listEl = document.getElementById('jsa-search-list');
+  try {
+    const res = await fetch(`/api/jsanalysis/${_jsaAnalysisId}/search?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      listEl.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'ext-list-empty';
+      empty.textContent = data.error || '검색 오류';
+      listEl.appendChild(empty);
+      return;
+    }
+
+    const results = data.results || [];
+    results.forEach(r => { _jsaFuncIndex[r.id] = { name: r.name, file: r.file }; });
+
+    listEl.innerHTML = '';
+    if (results.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'ext-list-empty';
+      empty.textContent = '일치하는 함수가 없습니다.';
+      listEl.appendChild(empty);
+      return;
+    }
+    // r.name/r.file은 업로드 파일 기반 값(악의적 값 가능) — textContent로만 삽입
+    results.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'ext-list-item' + (_jsaCurrentFunc && _jsaCurrentFunc.id === r.id ? ' selected' : '');
+      item.textContent = `${r.name}  (${r.file}:${r.line})  params:${r.params.length}  calls:${r.calls.length}  called_by:${r.called_by_count}`;
+      item.onclick = () => jsaSelectFunction(r.id);
+      listEl.appendChild(item);
+    });
+  } catch (e) {
+    listEl.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'ext-list-empty';
+    empty.textContent = `요청 오류: ${e.message}`;
+    listEl.appendChild(empty);
+  }
+}
+
+async function jsaSelectFunction(funcId) {
+  if (!_jsaAnalysisId) return;
+  try {
+    const res = await fetch(`/api/jsanalysis/${_jsaAnalysisId}/function?id=${encodeURIComponent(funcId)}`);
+    const data = await res.json();
+    if (!res.ok) { alert(data.error || '함수를 불러오지 못했습니다.'); return; }
+
+    _jsaCurrentFunc = data.function;
+    _jsaFuncIndex[_jsaCurrentFunc.id] = { name: _jsaCurrentFunc.name, file: _jsaCurrentFunc.file };
+    _jsaRenderDetail(_jsaCurrentFunc);
+    document.getElementById('jsa-detail-card').hidden = false;
+    jsaSwitchView('table');
+    await jsaSearch();  // 검색 목록의 selected 표시 갱신
+  } catch (e) {
+    alert(`요청 오류: ${e.message}`);
+  }
+}
+
+// f의 모든 필드는 업로드된 코드에서 추출된 값(악의적 값 가능) — textContent로만 삽입
+function _jsaRenderDetail(f) {
+  document.getElementById('jsa-detail-title').textContent = `${f.name}()`;
+  document.getElementById('jsa-d-loc').textContent = `${f.file} : ${f.unit} : L${f.line}`;
+
+  const paramsEl = document.getElementById('jsa-d-params');
+  paramsEl.innerHTML = '';
+  if (f.params.length === 0) {
+    const chip = document.createElement('span');
+    chip.className = 'mrg-col-chip';
+    chip.textContent = '(없음)';
+    paramsEl.appendChild(chip);
+  } else {
+    f.params.forEach(p => {
+      const chip = document.createElement('span');
+      chip.className = 'mrg-col-chip origin';
+      chip.textContent = p;
+      paramsEl.appendChild(chip);
+    });
+  }
+
+  const defsBody = document.getElementById('jsa-d-defs-body');
+  defsBody.innerHTML = '';
+  f.defs.forEach(d => {
+    const tr = document.createElement('tr');
+    const tdVar = document.createElement('td'); tdVar.textContent = d.var;
+    const tdExpr = document.createElement('td'); tdExpr.textContent = d.expr;
+    const tdDep = document.createElement('td'); tdDep.textContent = d.depends_on.join(', ') || '—';
+    const tdLine = document.createElement('td'); tdLine.textContent = d.line;
+    tr.appendChild(tdVar); tr.appendChild(tdExpr); tr.appendChild(tdDep); tr.appendChild(tdLine);
+    defsBody.appendChild(tr);
+  });
+
+  const retBody = document.getElementById('jsa-d-returns-body');
+  retBody.innerHTML = '';
+  f.returns.forEach(r => {
+    const tr = document.createElement('tr');
+    const tdExpr = document.createElement('td'); tdExpr.textContent = r.expr;
+    const tdDep = document.createElement('td'); tdDep.textContent = r.depends_on.join(', ') || '—';
+    const tdLine = document.createElement('td'); tdLine.textContent = r.line;
+    tr.appendChild(tdExpr); tr.appendChild(tdDep); tr.appendChild(tdLine);
+    retBody.appendChild(tr);
+  });
+
+  const callsBody = document.getElementById('jsa-d-calls-body');
+  callsBody.innerHTML = '';
+  f.out_calls.forEach(c => {
+    const tr = document.createElement('tr');
+    const tdCallee = document.createElement('td'); tdCallee.textContent = c.callee;
+    const tdExpr = document.createElement('td'); tdExpr.textContent = c.expr;
+    const tdArgs = document.createElement('td');
+    tdArgs.textContent = c.args.map(a => a.kind === 'function_literal' ? '(함수)' : (a.depends_on.join(',') || '—')).join(' | ');
+    const tdLine = document.createElement('td'); tdLine.textContent = c.line;
+    tr.appendChild(tdCallee); tr.appendChild(tdExpr); tr.appendChild(tdArgs); tr.appendChild(tdLine);
+    callsBody.appendChild(tr);
+  });
+
+  const cbList = document.getElementById('jsa-d-calledby-list');
+  cbList.innerHTML = '';
+  if (f.called_by.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'ext-list-empty';
+    empty.textContent = '이 함수를 호출하는 함수가 없습니다 (엔트리 포인트일 수 있음).';
+    cbList.appendChild(empty);
+  } else {
+    f.called_by.forEach(cid => {
+      const item = document.createElement('div');
+      item.className = 'ext-list-item';
+      const info = _jsaFuncIndex[cid];
+      item.textContent = info ? `${info.name}  (${info.file})` : cid;
+      item.onclick = () => jsaSelectFunction(cid);
+      cbList.appendChild(item);
+    });
+  }
+}
+
+function jsaSwitchView(view) {
+  const tableBtn = document.getElementById('jsa-view-table-btn');
+  const graphBtn = document.getElementById('jsa-view-graph-btn');
+  const tableView = document.getElementById('jsa-view-table');
+  const graphView = document.getElementById('jsa-view-graph');
+  if (view === 'graph') {
+    tableView.hidden = true; graphView.hidden = false;
+    tableBtn.classList.remove('primary'); graphBtn.classList.add('primary');
+    jsaLoadGraph('call');
+  } else {
+    graphView.hidden = true; tableView.hidden = false;
+    graphBtn.classList.remove('primary'); tableBtn.classList.add('primary');
+  }
+}
+
+async function _jsaEnsureMermaid() {
+  if (_jsaMermaidReady) return;
+  mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+  _jsaMermaidReady = true;
+}
+
+async function jsaLoadGraph(kind) {
+  if (!_jsaAnalysisId || !_jsaCurrentFunc) return;
+  const callBtn = document.getElementById('jsa-graph-call-btn');
+  const flowBtn = document.getElementById('jsa-graph-flow-btn');
+  const callControls = document.getElementById('jsa-graph-call-controls');
+  const flowControls = document.getElementById('jsa-graph-flow-controls');
+  if (kind === 'dataflow') {
+    callBtn.classList.remove('primary'); flowBtn.classList.add('primary');
+    callControls.hidden = true; flowControls.hidden = false;
+  } else {
+    flowBtn.classList.remove('primary'); callBtn.classList.add('primary');
+    flowControls.hidden = true; callControls.hidden = false;
+  }
+
+  const container = document.getElementById('jsa-mermaid');
+  container.textContent = '그래프 생성 중...';
+
+  const params = new URLSearchParams({ kind, id: _jsaCurrentFunc.id });
+  if (kind === 'dataflow') {
+    if (document.getElementById('jsa-graph-expand').checked) params.set('expand', '1');
+  } else {
+    params.set('depth', document.getElementById('jsa-graph-depth').value);
+    if (document.getElementById('jsa-graph-cross-only').checked) params.set('cross_file_only', '1');
+  }
+  try {
+    const res = await fetch(`/api/jsanalysis/${_jsaAnalysisId}/graph?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) { container.textContent = data.error || '그래프 생성 오류'; return; }
+
+    await _jsaEnsureMermaid();
+    const renderId = 'jsa-mmd-' + Date.now();
+    const { svg } = await mermaid.render(renderId, data.mermaid || 'graph LR\n  empty["표시할 데이터 없음"]');
+    container.innerHTML = svg;
+  } catch (e) {
+    container.textContent = `그래프 렌더링 오류: ${e.message}`;
+  }
+}
+
+function jsaReset() {
+  const hasState = _jsaFiles.length > 0 || !document.getElementById('jsa-summary-card').hidden;
+  if (hasState && !confirm('선택한 파일 목록과 분석 결과 화면이 초기화됩니다.\n초기화하시겠습니까?')) return;
+
+  _jsaFiles = [];
+  _jsaAnalysisId = null;
+  _jsaFuncIndex = {};
+  _jsaCurrentFunc = null;
+  _jsaModGraphShown = false;
+
+  _jsaRenderFileList();
+  document.getElementById('jsa-error').hidden = true;
+  document.getElementById('jsa-summary-card').hidden = true;
+  document.getElementById('jsa-search-card').hidden = true;
+  document.getElementById('jsa-detail-card').hidden = true;
+  document.getElementById('jsa-q-file').value = '';
+  document.getElementById('jsa-q-name').value = '';
+  document.getElementById('jsa-search-list').innerHTML = '<div class="ext-list-empty">분석이 완료되면 함수 목록이 표시됩니다.</div>';
+  document.getElementById('jsa-mod-edges-table').hidden = true;
+  document.getElementById('jsa-mod-unresolved-warn').hidden = true;
+  document.getElementById('jsa-mod-mermaid-wrap').hidden = true;
+  document.getElementById('jsa-mod-graph-btn').textContent = '🔀 의존 관계 그래프로 보기';
+}
+
 // ── 정보수집 (OSINT) ──────────────────────────────────────────────────────
 let reconJobId = null;
 let reconPollTimer = null;
@@ -3365,7 +4123,7 @@ function _reconShowResults(job) {
   document.getElementById('recon-stat-subs').textContent  = meta.subdomain_total || 0;
   document.getElementById('recon-stat-alive').textContent = (result.subdomains || []).filter(s => s.alive).length;
   document.getElementById('recon-stat-certs').textContent = (result.certificates || []).length;
-  document.getElementById('recon-stat-urls').textContent  = (result.archive_urls || []).length;
+  document.getElementById('recon-stat-urls').textContent  = meta.url_total || 0;
   document.getElementById('recon-stat-ports').textContent = Object.keys(result.ports || {}).length;
 
   // 다운로드 링크 활성화 (API 경로로 href 설정)
@@ -3409,6 +4167,31 @@ function _reconShowResults(job) {
     tr.appendChild(tdAlive);
     tr.appendChild(tdSrc);
     subBody.appendChild(tr);
+  });
+
+  // 수집 URL 표 — 서브도메인별 그룹 (Wayback/Common Crawl/urlscan.io/아카이브 robots·sitemap에서
+  // 온 외부 값, 자격증명 등이 원본 그대로 포함될 수 있음) — textContent로 삽입
+  const urlBody = document.getElementById('recon-url-body');
+  urlBody.innerHTML = '';
+  const subdomainUrls = result.subdomain_urls || {};
+  Object.keys(subdomainUrls).sort().forEach(host => {
+    subdomainUrls[host].forEach(entry => {
+      const tr = document.createElement('tr');
+
+      const tdHost = document.createElement('td');
+      tdHost.textContent = host;
+
+      const tdUrl = document.createElement('td');
+      tdUrl.textContent = entry.url;
+
+      const tdSrc = document.createElement('td');
+      tdSrc.textContent = (entry.sources || []).join(', ') || '-';
+
+      tr.appendChild(tdHost);
+      tr.appendChild(tdUrl);
+      tr.appendChild(tdSrc);
+      urlBody.appendChild(tr);
+    });
   });
 
   // 포트 표 — IP/호스트명/CVE는 Shodan InternetDB에서 온 외부 값(악의적 값 가능) — textContent로 삽입

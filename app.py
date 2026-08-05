@@ -24,8 +24,9 @@ sys.path.insert(0, BASE_DIR)
 from _core import (normalize_url, calculate_risk, generate_html_report,
                    save_crawl_log, parse_cookie_string, SPEED_DELAY,
                    EXTRACT_SPEED_DELAY, _ensure_extract_deps,
-                   _estimate_dump, _ensure_merge_deps, _ensure_recon_deps)
-from modules import MODULE_MAP, sqli_extract, excel_merge, recon
+                   _estimate_dump, _ensure_merge_deps, _ensure_recon_deps,
+                   _ensure_jsanalysis_deps)
+from modules import MODULE_MAP, sqli_extract, excel_merge, recon, js_analysis
 from modules._cancel import ScanCancelled
 from _runner import build_module_extra, run_single_module, MODULES_WITH_PROGRESS_CB
 
@@ -44,6 +45,10 @@ extract_lock = threading.Lock()
 
 # ── 정보수집(OSINT) 모드 ────────────────────────────────────────────────────
 recon_jobs: dict = {}
+
+# ── JS/HTML/XFDL 분석 모드 ───────────────────────────────────────────────────
+# 동기 처리(백그라운드 job 아님) — analysis_id로 결과만 캐시, 1시간 TTL GC
+jsanalysis_jobs: dict = {}
 
 
 def _build_proxies(proxy_host, proxy_port) -> Optional[dict]:
@@ -402,6 +407,21 @@ def _gc_recon_jobs() -> None:
     ]
     for jid in expired:
         del recon_jobs[jid]
+
+
+def _gc_jsanalysis_jobs() -> None:
+    """1시간 경과한 분석 결과를 정리한다 (메모리 누수 방지).
+
+    분석은 동기 처리이므로 생성 시점 = 완료 시점이라 created_at만 비교한다.
+    /api/jsanalysis/analyze 진입부에서 호출된다.
+    """
+    now = time.time()
+    expired = [
+        aid for aid, a in list(jsanalysis_jobs.items())
+        if (now - _to_ts(a["created_at"])) > JOB_TTL_SEC
+    ]
+    for aid in expired:
+        del jsanalysis_jobs[aid]
 
 
 def _run_recon_job(job_id: str, domain: str, sources: list, timeout: int,
@@ -1700,6 +1720,138 @@ def recon_report_excel(job_id):
         as_attachment=True,
         download_name=os.path.basename(path),
     )
+
+
+# ── JS/HTML/XFDL 분석 모드 ───────────────────────────────────────────────────
+
+@app.route("/api/jsanalysis/analyze", methods=["POST"])
+def jsanalysis_analyze():
+    """.js/.html/.xfdl/.xadl/.xjs/.xml 업로드 → 함수 인벤토리 + 호출 그래프 + 데이터플로우 정적 분석.
+
+    완전 오프라인(외부 요청 없음). multipart/form-data 수신:
+      files: 업로드 파일 목록 (.js/.html/.htm/.xfdl/.xadl/.xjs/.xml)
+
+    응답 JSON: analysis_id, files(파일별 처리 통계), function_count
+    분석 결과는 analysis_id로 서버에 캐시되어(TTL 1시간) 이후 검색/상세/그래프
+    요청 시 재업로드·재파싱 없이 재사용된다.
+    """
+    _ensure_jsanalysis_deps()
+    _gc_jsanalysis_jobs()
+
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        return jsonify({"error": "업로드된 파일이 없습니다."}), 400
+
+    sources = [(f.filename, f.read()) for f in files if f.filename]
+    if not sources:
+        return jsonify({"error": "유효한 파일이 없습니다."}), 400
+
+    try:
+        result = js_analysis.analyze(sources)
+    except Exception as e:
+        return jsonify({"error": f"분석 처리 오류: {e}"}), 500
+
+    analysis_id = f"jsan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+    jsanalysis_jobs[analysis_id] = {
+        "result": result,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    return jsonify({
+        "analysis_id": analysis_id,
+        "files": result["files"],
+        "function_count": len(result["functions"]),
+        "module_edge_count": len(result["modules"]["edges"]),
+        "module_unresolved_count": len(result["modules"]["unresolved"]),
+    })
+
+
+@app.route("/api/jsanalysis/<analysis_id>/modules")
+def jsanalysis_modules(analysis_id):
+    """파일 간 import/require/include/script-src 의존 관계 목록 조회.
+
+    응답 JSON: edges(해소된 관계: from/to/kind/specifier), unresolved(미해소: from/specifier/kind/reason)
+    """
+    job = jsanalysis_jobs.get(analysis_id)
+    if not job:
+        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
+    modules = job["result"]["modules"]
+    return jsonify({"edges": modules["edges"], "unresolved": modules["unresolved"]})
+
+
+@app.route("/api/jsanalysis/<analysis_id>/search")
+def jsanalysis_search(analysis_id):
+    """분석 결과 내 함수 검색 — 쿼리파라미터 name(함수명)·file(파일명) 부분/대소문자 무관 일치."""
+    job = jsanalysis_jobs.get(analysis_id)
+    if not job:
+        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
+    name_q = request.args.get("name", "")
+    file_q = request.args.get("file", "")
+    results = js_analysis.search_functions(job["result"], name_query=name_q, file_query=file_q)
+    return jsonify({"results": results})
+
+
+@app.route("/api/jsanalysis/<analysis_id>/function")
+def jsanalysis_function(analysis_id):
+    """함수 상세 조회 — 쿼리파라미터 id=함수id. defs/returns/out_calls/called_by 전체 반환."""
+    job = jsanalysis_jobs.get(analysis_id)
+    if not job:
+        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
+    func = js_analysis.get_function(job["result"], request.args.get("id", ""))
+    if func is None:
+        return jsonify({"error": "함수를 찾을 수 없습니다."}), 404
+    return jsonify({"function": func})
+
+
+def _clamp_int(raw: str, default: int, lo: int, hi: int) -> int:
+    """쿼리파라미터 문자열을 정수로 변환하고 [lo, hi] 범위로 자른다. 파싱 실패 시 default."""
+    try:
+        return max(lo, min(hi, int(raw)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_truthy(raw: str) -> bool:
+    """쿼리파라미터 문자열이 "켜짐"을 뜻하는지 판별 (1/true/yes, 대소문자 무관)."""
+    return (raw or "").strip().lower() in ("1", "true", "yes")
+
+
+@app.route("/api/jsanalysis/<analysis_id>/graph")
+def jsanalysis_graph(analysis_id):
+    """mermaid 그래프 소스 반환.
+
+    kind=call     : 호출 그래프. id 지정 시 해당 함수 중심 depth-hop 서브그래프
+                    (depth: 1~5, 기본 1), 미지정 시 전체 그래프(최대 120개 노드).
+                    cross_file_only=1이면 파일 경계를 넘는 호출 간선만 표시.
+    kind=dataflow : 함수 내부 데이터플로우(파라미터→지역변수→return/외부호출). id 필수.
+                    expand=1이면 import/require 등으로 해소된 호출 대상 함수의 데이터플로우까지
+                    같은 그래프에 인라인 전개(파일 경계를 넘는 데이터 흐름 확인용).
+    kind=module   : 업로드된 파일 간 import/require/include/script-src 의존 관계 그래프.
+    """
+    job = jsanalysis_jobs.get(analysis_id)
+    if not job:
+        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
+    kind = request.args.get("kind", "call")
+    func_id = request.args.get("id") or None
+
+    if kind == "dataflow":
+        if not func_id:
+            return jsonify({"error": "dataflow 그래프는 함수 id가 필요합니다."}), 400
+        func = js_analysis.get_function(job["result"], func_id)
+        if func is None:
+            return jsonify({"error": "함수를 찾을 수 없습니다."}), 404
+        expand = _is_truthy(request.args.get("expand", ""))
+        mermaid = js_analysis.to_mermaid_dataflow(func, analysis=job["result"], expand=expand)
+    elif kind == "module":
+        mermaid = js_analysis.to_mermaid_module_graph(job["result"])
+    else:
+        depth = _clamp_int(request.args.get("depth", ""), default=1, lo=1, hi=5)
+        cross_file_only = _is_truthy(request.args.get("cross_file_only", ""))
+        mermaid = js_analysis.to_mermaid_call_graph(
+            job["result"], center_id=func_id, depth=depth, cross_file_only=cross_file_only
+        )
+
+    return jsonify({"mermaid": mermaid})
 
 
 def _find_free_port(host, start_port, max_tries=20):

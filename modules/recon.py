@@ -4,24 +4,31 @@ recon.py — 패시브 정보수집(OSINT) 정찰 모듈
 탐지 모듈(scan() 인터페이스)·SQLi 추출·엑셀 취합과 완전히 분리된 별도 모드.
 
 **하드 룰: 대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다
-(순수 패시브).** 이 모듈이 직접 접속하는 호스트는 아래 4개뿐이다.
+(순수 패시브).** 이 모듈이 직접 접속하는 호스트는 아래 6개뿐이다.
 
-  - crt.sh               : CT(Certificate Transparency) 로그 조회
-  - web.archive.org      : Wayback Machine CDX 인덱스 조회 (스냅샷 본문은 미조회)
-  - 8.8.8.8 / 1.1.1.1    : 공용 DNS 리졸버 (대상 네임서버로 직접 질의하지 않음 —
-                           캐시 미스 시 재귀 질의는 리졸버가 대신 수행)
-  - internetdb.shodan.io : Shodan이 사전 수집한 IP별 포트 정보 조회
-                           (무키, 읽기 전용 — 온디맨드 스캔 API 아님)
+  - crt.sh                 : CT(Certificate Transparency) 로그 조회
+  - web.archive.org        : Wayback Machine CDX 인덱스 조회 + robots.txt/sitemap.xml
+                             아카이브 스냅샷 본문 조회 (대상이 아닌 아카이브에서 읽음 —
+                             대상 서버로는 요청이 가지 않음)
+  - index.commoncrawl.org  : Common Crawl 인덱스(CDX) 조회 (무키)
+  - urlscan.io             : 기존 공개 스캔 결과 검색 (search API, 무키·읽기 전용 —
+                             스캔 제출 엔드포인트(/scan)는 호출하지 않음)
+  - 8.8.8.8 / 1.1.1.1      : 공용 DNS 리졸버 (대상 네임서버로 직접 질의하지 않음 —
+                             캐시 미스 시 재귀 질의는 리졸버가 대신 수행)
+  - internetdb.shodan.io   : Shodan이 사전 수집한 IP별 포트 정보 조회
+                             (무키, 읽기 전용 — 온디맨드 스캔 API 아님)
 
-이 4개 외의 호스트로 requests가 나가는 코드 경로는 존재하지 않는다.
+이 6개 외의 호스트로 requests가 나가는 코드 경로는 존재하지 않는다.
 """
 import html as html_module
 import ipaddress
+import json
 import os
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 
@@ -31,10 +38,15 @@ from modules._cancel import wait_or_cancel
 
 CRTSH_URL = "https://crt.sh/"
 WAYBACK_CDX_URL = "http://web.archive.org/cdx/search/cdx"
+WAYBACK_AVAILABLE_URL = "http://archive.org/wayback/available"
+COMMONCRAWL_COLLINFO_URL = "https://index.commoncrawl.org/collinfo.json"
+# collinfo.json 조회 실패 시에만 쓰는 최후 fallback 인덱스 id (주기적 갱신 필요)
+COMMONCRAWL_FALLBACK_INDEXES = ("CC-MAIN-2026-25", "CC-MAIN-2026-18", "CC-MAIN-2026-10")
+URLSCAN_SEARCH_URL = "https://urlscan.io/api/v1/search/"
 INTERNETDB_URL = "https://internetdb.shodan.io/{ip}"
 
 # 지원 소스 키 — 대시보드 토글과 1:1 매핑
-SOURCE_KEYS = ("crtsh", "wayback", "dns", "internetdb")
+SOURCE_KEYS = ("crtsh", "wayback", "dns", "commoncrawl", "urlscan", "archivepaths", "internetdb")
 
 # 공용 DNS 리졸버 — 대상 네임서버 직접 질의 금지, 이 리졸버로만 조회
 PUBLIC_RESOLVERS = ["8.8.8.8", "1.1.1.1"]
@@ -50,8 +62,17 @@ DEFAULT_MAX_SUBDOMAINS = 200
 MIN_MAX_SUBDOMAINS = 10
 MAX_MAX_SUBDOMAINS = 1000
 
-# 아카이브 URL 리포트 노출 상한 (과다 팽창 방지)
-MAX_ARCHIVE_URLS = 500
+# Common Crawl 최근 인덱스 조회 개수
+CC_INDEX_COUNT = 3
+# 아카이브 robots.txt/sitemap.xml 파싱 대상 서브도메인 상한 (apex 우선)
+MAX_ROBOTS_HOSTS = 25
+# sitemap.xml/사이트맵 인덱스 하위 fetch 총 상한 (1단계 재귀)
+MAX_SITEMAP_FETCH = 10
+# 소스별 원시 URL 수집 상한 (그룹핑 전 1차 방어 — 과다 팽창 방지)
+MAX_RAW_URLS_PER_SOURCE = 5000
+# 서브도메인별 / 전체 URL 최종 노출 상한
+MAX_URLS_PER_HOST = 200
+MAX_TOTAL_URLS = 3000
 
 # 엑셀 수식 인젝션 방어 접두사
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
@@ -169,7 +190,7 @@ def query_wayback(domain: str, timeout: int, session: requests.Session) -> Dict[
             host = urlparse(original).netloc.split(":")[0].lower()
             if host and _is_in_scope(host, domain):
                 subdomains.add(host)
-            if len(urls) < MAX_ARCHIVE_URLS:
+            if len(urls) < MAX_RAW_URLS_PER_SOURCE:
                 urls.append(original)
     except Exception as e:
         return {"subdomains": subdomains, "urls": urls,
@@ -177,7 +198,230 @@ def query_wayback(domain: str, timeout: int, session: requests.Session) -> Dict[
     return {"subdomains": subdomains, "urls": urls, "error": None}
 
 
-# ── 소스 3: 공용 DNS 리졸버 ───────────────────────────────────────────────────
+# ── 소스 3: Common Crawl 인덱스 ──────────────────────────────────────────────
+
+def _commoncrawl_indexes(timeout: int, session: requests.Session) -> List[Tuple[str, str]]:
+    """collinfo.json에서 최신 CC_INDEX_COUNT개 (id, cdx-api URL) 목록을 확보한다.
+
+    조회 실패 시 하드코딩된 COMMONCRAWL_FALLBACK_INDEXES로 대체한다(최후 수단).
+    """
+    try:
+        resp = session.get(COMMONCRAWL_COLLINFO_URL, timeout=timeout)
+        resp.raise_for_status()
+        collinfo = resp.json()
+        pairs = [(c["id"], c["cdx-api"]) for c in collinfo if c.get("id") and c.get("cdx-api")]
+        if pairs:
+            return pairs[:CC_INDEX_COUNT]
+    except Exception:
+        pass
+    return [(cid, f"https://index.commoncrawl.org/{cid}-index")
+            for cid in COMMONCRAWL_FALLBACK_INDEXES[:CC_INDEX_COUNT]]
+
+
+def query_commoncrawl(domain: str, timeout: int, session: requests.Session) -> Dict[str, Any]:
+    """Common Crawl 인덱스 조회 — 서브도메인 + 관측 URL 반환.
+
+    최근 CC_INDEX_COUNT개 크롤 인덱스를 matchType=domain으로 각각 조회한다
+    (JSONL 응답 — Wayback CDX와 달리 헤더 행이 없다). 개별 인덱스 조회 실패는
+    건너뛰고 나머지 인덱스로 계속 진행한다.
+    """
+    subdomains: Set[str] = set()
+    urls: List[str] = []
+    seen: Set[str] = set()
+    failed: List[str] = []
+
+    for index_id, cdx_api in _commoncrawl_indexes(timeout, session):
+        try:
+            resp = session.get(
+                cdx_api,
+                params={"url": domain, "matchType": "domain", "output": "json", "limit": 2000},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            for line in resp.text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                original = row.get("url", "")
+                if not original or original in seen:
+                    continue
+                seen.add(original)
+                host = urlparse(original).netloc.split(":")[0].lower()
+                if host and _is_in_scope(host, domain):
+                    subdomains.add(host)
+                if len(urls) < MAX_RAW_URLS_PER_SOURCE:
+                    urls.append(original)
+        except Exception:
+            failed.append(index_id)
+
+    error = f"Common Crawl 일부 인덱스 조회 실패: {', '.join(failed)}" if failed else None
+    return {"subdomains": subdomains, "urls": urls, "error": error}
+
+
+# ── 소스 4: urlscan.io (무키 search API) ─────────────────────────────────────
+
+def query_urlscan(domain: str, timeout: int, session: requests.Session) -> Dict[str, Any]:
+    """urlscan.io search API(무키) 조회 — 서브도메인 + 관측 URL 반환.
+
+    기존 공개 스캔 결과를 검색(search)만 하는 읽기 전용 조회다 — 스캔 제출
+    엔드포인트(/scan)는 호출하지 않는다(대상에 새 요청을 유발하지 않기 위함).
+    """
+    subdomains: Set[str] = set()
+    urls: List[str] = []
+    try:
+        resp = session.get(
+            URLSCAN_SEARCH_URL,
+            params={"q": f"domain:{domain}", "size": 100},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        for entry in data.get("results", []):
+            original = (entry.get("page") or {}).get("url", "")
+            if not original:
+                continue
+            host = urlparse(original).netloc.split(":")[0].lower()
+            if host and _is_in_scope(host, domain):
+                subdomains.add(host)
+                if len(urls) < MAX_RAW_URLS_PER_SOURCE:
+                    urls.append(original)
+    except Exception as e:
+        return {"subdomains": subdomains, "urls": urls, "error": f"urlscan.io 조회 실패: {e}"}
+    return {"subdomains": subdomains, "urls": urls, "error": None}
+
+
+# ── 소스 5: 아카이브된 robots.txt / sitemap.xml 파싱 ─────────────────────────
+
+_ROBOTS_PATH_RE = re.compile(r"^(?:disallow|allow)\s*:\s*(\S+)", re.IGNORECASE)
+_ROBOTS_SITEMAP_RE = re.compile(r"^sitemap\s*:\s*(\S+)", re.IGNORECASE)
+
+
+def _wayback_snapshot_body(query_url: str, timeout: int, session: requests.Session) -> Optional[str]:
+    """Wayback availability API로 query_url의 최신 스냅샷을 찾아 raw 본문을 반환한다.
+
+    web.archive.org에서만 조회한다 — 대상 서버로는 어떤 요청도 가지 않는다.
+    스냅샷이 없거나 조회 실패 시 None(정상 상황 — robots.txt/sitemap.xml이
+    아카이브에 없는 호스트가 대부분이므로 예외로 취급하지 않는다).
+    """
+    try:
+        resp = session.get(WAYBACK_AVAILABLE_URL, params={"url": query_url}, timeout=timeout)
+        resp.raise_for_status()
+        closest = (resp.json().get("archived_snapshots") or {}).get("closest")
+        if not closest or not closest.get("available") or not closest.get("url"):
+            return None
+        # closest["url"] = ".../web/{timestamp}/{archived_original_url}"
+        # timestamp 뒤에 "id_"를 삽입하면 Wayback 툴바 없는 raw 본문을 받는다.
+        raw_url = re.sub(r"(/web/\d+)/", r"\1id_/", closest["url"], count=1)
+        body_resp = session.get(raw_url, timeout=timeout)
+        body_resp.raise_for_status()
+        return body_resp.text
+    except Exception:
+        return None
+
+
+def _parse_robots(text: str, base_url: str) -> Tuple[List[str], List[str]]:
+    """robots.txt 본문에서 Disallow/Allow 경로와 Sitemap 지시문을 분리해 추출한다.
+
+    반환: (paths, sitemaps). Disallow/Allow 경로 문자열에 "sitemap"이 우연히
+    포함되어도 오분류되지 않도록, 지시문 종류(Sitemap: vs Disallow/Allow:)로만
+    구분한다 — 파싱 시점에 이미 분리되므로 호출부에서 문자열 추측이 불필요하다.
+    """
+    paths: List[str] = []
+    sitemaps: List[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _ROBOTS_SITEMAP_RE.match(line)
+        if m:
+            sitemaps.append(urljoin(base_url, m.group(1).strip()))
+            continue
+        m = _ROBOTS_PATH_RE.match(line)
+        if m:
+            path = m.group(1).strip()
+            if path and path != "/":
+                paths.append(urljoin(base_url, path))
+    return paths, sitemaps
+
+
+def _parse_sitemap(text: str) -> Tuple[List[str], List[str]]:
+    """sitemap.xml 본문에서 <loc> URL을 추출한다.
+
+    반환: (urls, sub_sitemaps). 사이트맵 인덱스(<sitemapindex>)면 urls는 비우고
+    하위 사이트맵 목록을 sub_sitemaps로 반환한다.
+    """
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return [], []
+    locs = [el.text.strip() for el in root.iter()
+            if el.tag.lower().endswith("loc") and el.text and el.text.strip()]
+    if "sitemapindex" in root.tag.lower():
+        return [], locs
+    return locs, []
+
+
+def fetch_archive_paths(hosts: List[str], domain: str, timeout: int,
+                        session: requests.Session, stop_event=None) -> List[Tuple[str, str]]:
+    """대상 서브도메인의 robots.txt/sitemap.xml **아카이브 스냅샷 본문**(web.archive.org)을
+    읽어 선언된 엔드포인트 경로를 추출한다. 대상에는 어떤 요청도 보내지 않는다.
+
+    hosts 중 apex(domain) 우선으로 정렬 후 MAX_ROBOTS_HOSTS개까지만 조회한다.
+    반환: [(url, "robots"|"sitemap"), ...]
+    """
+    results: List[Tuple[str, str]] = []
+    sitemap_budget = {"n": MAX_SITEMAP_FETCH}
+    priority_hosts = sorted(hosts, key=lambda h: (h != domain, h))[:MAX_ROBOTS_HOSTS]
+
+    def _fetch_sitemap(sm_url: str) -> None:
+        if sitemap_budget["n"] <= 0 or len(results) >= MAX_RAW_URLS_PER_SOURCE:
+            return
+        wait_or_cancel(stop_event, 0)
+        sitemap_budget["n"] -= 1
+        body = _wayback_snapshot_body(sm_url, timeout, session)
+        if not body:
+            return
+        locs, sub_sitemaps = _parse_sitemap(body)
+        for loc in locs:
+            results.append((loc, "sitemap"))
+        for sub in sub_sitemaps:
+            if sitemap_budget["n"] <= 0:
+                break
+            wait_or_cancel(stop_event, 0)
+            sitemap_budget["n"] -= 1
+            sub_body = _wayback_snapshot_body(sub, timeout, session)
+            if sub_body:
+                sub_locs, _ = _parse_sitemap(sub_body)
+                for loc in sub_locs:
+                    results.append((loc, "sitemap"))
+
+    for host in priority_hosts:
+        if len(results) >= MAX_RAW_URLS_PER_SOURCE:
+            break
+        wait_or_cancel(stop_event, 0)
+        base_url = f"http://{host}/"
+        sitemap_candidates = [base_url + "sitemap.xml"]
+
+        robots_body = _wayback_snapshot_body(f"{host}/robots.txt", timeout, session)
+        if robots_body:
+            robots_paths, robots_sitemaps = _parse_robots(robots_body, base_url)
+            for path in robots_paths:
+                results.append((path, "robots"))
+            for sm in robots_sitemaps:
+                if sm not in sitemap_candidates:
+                    sitemap_candidates.append(sm)
+
+        for sm_url in sitemap_candidates:
+            _fetch_sitemap(sm_url)
+
+    return results[:MAX_RAW_URLS_PER_SOURCE]
+
+
+# ── 소스 6: 공용 DNS 리졸버 ───────────────────────────────────────────────────
 
 def _make_resolver(timeout: int):
     """공용 리졸버(PUBLIC_RESOLVERS) 전용 dns.resolver.Resolver를 생성한다.
@@ -217,7 +461,7 @@ def resolve_dns(host: str, resolver, record_types: Tuple[str, ...]) -> Dict[str,
     return records
 
 
-# ── 소스 4: Shodan InternetDB (무키, 읽기 전용) ──────────────────────────────
+# ── 소스 7: Shodan InternetDB (무키, 읽기 전용) ──────────────────────────────
 
 def query_internetdb(ip: str, timeout: int, session: requests.Session) -> Optional[Dict[str, Any]]:
     """Shodan InternetDB 무키 조회 — 해당 IP에 대해 Shodan이 사전에 수집해 둔
@@ -271,11 +515,15 @@ def run_recon(domain: str, sources: List[str], *,
     all_subdomains: Set[str] = {domain}
     origin: Dict[str, Set[str]] = {domain: set()}
     certificates: List[Dict[str, Any]] = []
-    archive_urls: List[str] = []
+    url_sources: Dict[str, Set[str]] = {}
 
     def _add_origin(hosts: Set[str], source: str) -> None:
         for h in hosts:
             origin.setdefault(h, set()).add(source)
+
+    def _add_urls(urls: List[str], source: str) -> None:
+        for u in urls:
+            url_sources.setdefault(u, set()).add(source)
 
     # ── 1단계: 서브도메인 발굴 (crt.sh) ──────────────────────────────────────
     if "crtsh" in sources_set:
@@ -286,20 +534,52 @@ def run_recon(domain: str, sources: List[str], *,
         certificates = r["certificates"]
         if r.get("error"):
             errors.append({"source": "crtsh", "message": r["error"]})
-    _report(10)
+    _report(6)
 
-    # ── 2단계: 서브도메인 발굴 (Wayback CDX) ────────────────────────────────
+    # ── 2단계: 서브도메인 발굴 + URL 수집 (Wayback CDX) ─────────────────────
     if "wayback" in sources_set:
         wait_or_cancel(stop_event, 0)
         r = query_wayback(domain, timeout, session)
         _add_origin(r["subdomains"], "wayback")
         all_subdomains |= r["subdomains"]
-        archive_urls = r["urls"]
+        _add_urls(r["urls"], "wayback")
         if r.get("error"):
             errors.append({"source": "wayback", "message": r["error"]})
+    _report(12)
+
+    # ── 3단계: 서브도메인 발굴 + URL 수집 (Common Crawl) ─────────────────────
+    if "commoncrawl" in sources_set:
+        wait_or_cancel(stop_event, 0)
+        r = query_commoncrawl(domain, timeout, session)
+        _add_origin(r["subdomains"], "commoncrawl")
+        all_subdomains |= r["subdomains"]
+        _add_urls(r["urls"], "commoncrawl")
+        if r.get("error"):
+            errors.append({"source": "commoncrawl", "message": r["error"]})
     _report(20)
 
-    # ── 3단계: DNS 레코드 조회 (공용 리졸버) ────────────────────────────────
+    # ── 4단계: 서브도메인 발굴 + URL 수집 (urlscan.io) ───────────────────────
+    if "urlscan" in sources_set:
+        wait_or_cancel(stop_event, 0)
+        r = query_urlscan(domain, timeout, session)
+        _add_origin(r["subdomains"], "urlscan")
+        all_subdomains |= r["subdomains"]
+        _add_urls(r["urls"], "urlscan")
+        if r.get("error"):
+            errors.append({"source": "urlscan", "message": r["error"]})
+    _report(26)
+
+    # ── 5단계: 아카이브 robots.txt/sitemap.xml 파싱 ──────────────────────────
+    if "archivepaths" in sources_set:
+        wait_or_cancel(stop_event, 0)
+        pairs = fetch_archive_paths(sorted(all_subdomains), domain, timeout, session, stop_event)
+        for url, src in pairs:
+            host = urlparse(url).netloc.split(":")[0].lower()
+            if host and _is_in_scope(host, domain):
+                url_sources.setdefault(url, set()).add(src)
+    _report(45)
+
+    # ── 6단계: DNS 레코드 조회 (공용 리졸버) ────────────────────────────────
     dns_records: Dict[str, Dict[str, List[str]]] = {}
     resolved_ips: Set[str] = set()
     target_hosts = sorted(all_subdomains)
@@ -318,11 +598,11 @@ def run_recon(domain: str, sources: List[str], *,
                 dns_records[host] = recs
                 for rtype in ("A", "AAAA"):
                     resolved_ips.update(recs.get(rtype, []))
-            _report(20 + int((i + 1) / total * 60))
+            _report(45 + int((i + 1) / total * 40))
     else:
-        _report(80)
+        _report(85)
 
-    # ── 4단계: 열린 포트 조회 (Shodan InternetDB, 무키) ─────────────────────
+    # ── 7단계: 열린 포트 조회 (Shodan InternetDB, 무키) ─────────────────────
     ports: Dict[str, Any] = {}
     if "internetdb" in sources_set and resolved_ips:
         ip_list = sorted(resolved_ips, key=_ip_sort_key)
@@ -332,7 +612,7 @@ def run_recon(domain: str, sources: List[str], *,
             info = query_internetdb(ip, timeout, session)
             if info:
                 ports[ip] = info
-            _report(80 + int((i + 1) / total * 20))
+            _report(85 + int((i + 1) / total * 15))
     else:
         _report(100)
 
@@ -342,12 +622,30 @@ def run_recon(domain: str, sources: List[str], *,
         for h in sorted(all_subdomains)
     ]
 
+    # ── URL을 서브도메인별로 그룹핑 (스코프 필터 + 상한 적용) ────────────────
+    subdomain_urls: Dict[str, List[Dict[str, Any]]] = {}
+    url_total = 0
+    url_truncated = False
+    for url in sorted(url_sources.keys()):
+        host = urlparse(url).netloc.split(":")[0].lower()
+        if not host or not _is_in_scope(host, domain):
+            continue
+        if url_total >= MAX_TOTAL_URLS:
+            url_truncated = True
+            break
+        bucket = subdomain_urls.setdefault(host, [])
+        if len(bucket) >= MAX_URLS_PER_HOST:
+            url_truncated = True
+            continue
+        bucket.append({"url": url, "sources": sorted(url_sources[url])})
+        url_total += 1
+
     return {
         "domain": domain,
         "subdomains": subdomains_out,
         "dns_records": dns_records,
         "certificates": certificates,
-        "archive_urls": archive_urls,
+        "subdomain_urls": subdomain_urls,
         "ports": ports,
         "errors": errors,
         "meta": {
@@ -359,6 +657,8 @@ def run_recon(domain: str, sources: List[str], *,
             "subdomain_truncated": truncated,
             "max_subdomains": max_subdomains,
             "resolved_ip_count": len(resolved_ips),
+            "url_total": url_total,
+            "url_truncated": url_truncated,
         },
     }
 
@@ -453,14 +753,22 @@ def _recon_html_certs(certificates: List[Dict[str, Any]]) -> str:
     )
 
 
-def _recon_html_urls(archive_urls: List[str]) -> str:
-    if not archive_urls:
-        return '<div class="empty">아카이브 URL 없음</div>'
-    rows = "".join(f'<tr><td><code>{_esc(u)}</code></td></tr>' for u in archive_urls)
-    more = ""
+def _recon_html_urls(subdomain_urls: Dict[str, List[Dict[str, Any]]]) -> str:
+    if not subdomain_urls:
+        return '<div class="empty">수집된 URL 없음</div>'
+    rows = []
+    for host in sorted(subdomain_urls.keys()):
+        for entry in subdomain_urls[host]:
+            src_badges = "".join(f'<span class="badge">{_esc(s)}</span>' for s in entry.get("sources", []))
+            rows.append(
+                f'<tr><td><code>{_esc(host)}</code></td>'
+                f'<td><code>{_esc(entry["url"])}</code></td>'
+                f'<td>{src_badges or "-"}</td></tr>'
+            )
     return (
-        '<div class="table-wrap"><table><thead><tr><th>Archived URL</th>'
-        '</tr></thead><tbody>' + rows + '</tbody></table></div>' + more
+        '<div class="table-wrap"><table><thead><tr>'
+        '<th>서브도메인</th><th>URL</th><th>발견 소스</th>'
+        '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>'
     )
 
 
@@ -509,6 +817,12 @@ def generate_recon_html(result: Dict[str, Any], output_dir: str) -> str:
             f'<span style="color:#fb923c"> (DNS 확인 상한 {meta["max_subdomains"]}개로 제한됨)</span>'
         )
 
+    url_truncated_note = ""
+    if meta.get("url_truncated"):
+        url_truncated_note = (
+            f'<span style="color:#fb923c"> (호스트당 {MAX_URLS_PER_HOST}개 / 전체 {MAX_TOTAL_URLS}개 상한으로 제한됨)</span>'
+        )
+
     html = f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Space Scan Recon – {_esc(domain)}</title>
@@ -528,7 +842,7 @@ def generate_recon_html(result: Dict[str, Any], output_dir: str) -> str:
   <div class="stat"><div class="stat-n">{meta["subdomain_total"]}</div><div class="stat-lbl">서브도메인</div></div>
   <div class="stat"><div class="stat-n">{len(result["dns_records"])}</div><div class="stat-lbl">DNS 생존 확인</div></div>
   <div class="stat"><div class="stat-n">{len(result["certificates"])}</div><div class="stat-lbl">인증서(CT 로그)</div></div>
-  <div class="stat"><div class="stat-n">{len(result["archive_urls"])}</div><div class="stat-lbl">아카이브 URL</div></div>
+  <div class="stat"><div class="stat-n">{meta["url_total"]}</div><div class="stat-lbl">수집 URL</div></div>
   <div class="stat"><div class="stat-n">{len(result["ports"])}</div><div class="stat-lbl">포트 확인 IP</div></div>
 </div>
 
@@ -541,8 +855,8 @@ def generate_recon_html(result: Dict[str, Any], output_dir: str) -> str:
 <div class="sec-hd">인증서 (CT 로그 — crt.sh)</div>
 {_recon_html_certs(result["certificates"])}
 
-<div class="sec-hd">아카이브 URL (Wayback Machine)</div>
-{_recon_html_urls(result["archive_urls"])}
+<div class="sec-hd">수집 URL — 서브도메인별 (Wayback/Common Crawl/urlscan.io/아카이브 robots·sitemap){url_truncated_note}</div>
+{_recon_html_urls(result["subdomain_urls"])}
 
 <div class="sec-hd">열린 포트 (Shodan InternetDB — 무키, 사전 수집 데이터)</div>
 {_recon_html_ports(result["ports"])}
@@ -571,7 +885,7 @@ def _safe_cell(v: Any) -> Any:
 def save_recon_to_excel(result: Dict[str, Any], output_dir: str) -> str:
     """정보수집 결과를 xlsx로 저장하고 절대경로를 반환한다.
 
-    시트 구성: INFO / Subdomains / DNS / Certificates / ArchiveURLs / Ports
+    시트 구성: INFO / Subdomains / DNS / Certificates / SubdomainURLs / Ports
     """
     from openpyxl import Workbook
 
@@ -596,6 +910,8 @@ def save_recon_to_excel(result: Dict[str, Any], output_dir: str) -> str:
         ("Subdomain Truncated", meta["subdomain_truncated"]),
         ("Max Subdomains", meta["max_subdomains"]),
         ("Resolved IP Count", meta["resolved_ip_count"]),
+        ("URL Total", meta["url_total"]),
+        ("URL Truncated", meta["url_truncated"]),
         ("Errors", "; ".join(f'{e["source"]}: {e["message"]}' for e in result.get("errors", []))),
     ]
     for k, v in info_rows:
@@ -619,10 +935,15 @@ def save_recon_to_excel(result: Dict[str, Any], output_dir: str) -> str:
         ws_cert.append([_safe_cell(c.get("common_name")), _safe_cell(c.get("issuer")),
                         _safe_cell(c.get("not_before")), _safe_cell(c.get("not_after"))])
 
-    ws_urls = wb.create_sheet("ArchiveURLs")
-    ws_urls.append(["URL"])
-    for u in result["archive_urls"]:
-        ws_urls.append([_safe_cell(u)])
+    ws_urls = wb.create_sheet("SubdomainURLs")
+    ws_urls.append(["Subdomain", "URL", "Sources"])
+    for host in sorted(result["subdomain_urls"].keys()):
+        for entry in result["subdomain_urls"][host]:
+            ws_urls.append([
+                _safe_cell(host),
+                _safe_cell(entry["url"]),
+                _safe_cell(", ".join(entry.get("sources", []))),
+            ])
 
     ws_ports = wb.create_sheet("Ports")
     ws_ports.append(["IP", "Ports", "Hostnames", "CPEs", "Tags", "Vulns"])

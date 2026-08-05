@@ -46,6 +46,7 @@ sources: List[Tuple[str, bytes]]  # [(파일명, 바이트스트림), ...]
 
 - 출력 파일명: `merge_{out_name}_{YYYYMMDD_HHMMSS}.xlsx`
 - 빠진 컬럼은 빈칸으로 채워 모든 행이 동일한 열 수를 유지한다
+- 저장 불가 제어문자(`\x00`-`\x08`, `\x0b`, `\x0c`, `\x0e`-`\x1f`) 제거 후 저장 — 미제거 시 openpyxl `IllegalCharacterError`로 저장 실패
 - 수식 인젝션 방어: `=`/`+`/`-`/`@`/탭/CR 시작 문자열에 `'` prefix 부착
 
 ---

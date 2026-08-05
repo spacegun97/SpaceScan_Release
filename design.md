@@ -20,7 +20,8 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
 │  ├─ "스캔 히스토리"       │                             │
 │  ├─ "데이터 추출 (SQLi)"  │                             │
 │  ├─ "엑셀 취합"           │                             │
-│  └─ "정보수집 (OSINT)"    │                             │
+│  ├─ "정보수집 (OSINT)"    │                             │
+│  └─ "JS 데이터플로우 분석"│                             │
 └──────────────┬────────────┴──────────────────────────────┘
                │ 공유 유틸: _core.py
                │   ├── normalize_url / calculate_risk
@@ -29,7 +30,8 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
                │   ├── _ensure_extract_deps / _estimate_dump
                │   ├── _ensure_merge_deps
                │   ├── _ensure_recon_deps  (dnspython + openpyxl lazy 설치)
-               │   └── _ensure_render_deps  (Playwright lazy 설치)
+               │   ├── _ensure_render_deps  (Playwright lazy 설치)
+               │   └── _ensure_jsanalysis_deps  (esprima lazy 설치)
                │ 공용 헬퍼: _runner.py
                │   ├── build_module_extra() — 모듈별 추가 파라미터 dict 구성
                │   └── run_single_module()  — scan() 호출 + elapsed/error 처리
@@ -45,7 +47,8 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
 │   ├── path_traversal.py     Path Traversal 탐지          │
 │   ├── sqli_extract.py       SQLi 데이터 추출 (별도 모드) │
 │   ├── excel_merge.py        엑셀 취합 (별도 모드)         │
-│   └── recon.py              정보수집 OSINT (별도 모드, 순수 패시브)│
+│   ├── recon.py              정보수집 OSINT (별도 모드, 순수 패시브)│
+│   └── js_analysis.py        JS/HTML/XFDL/XADL/XJS/XML 데이터플로우 분석 (별도 모드, 완전 오프라인)│
 └──────────────┬──────────────────────────────────────────┘
                │
 ┌──────────────▼──────────────────────────────────────────┐
@@ -83,6 +86,7 @@ Flask 웹 대시보드(`app.py` + `dashboard/dashboard.html`) 인터페이스를
 - `parse_cookie_string()` — `"key=val; key2=val2"` 형식 문자열을 `{키: 값}` 딕셔너리로 파싱
 - `_estimate_dump()` — SQLi dump 예상 요청 수 / 소요시간 계산. estimate 단계에서 COUNT로 얻은 `total_rows`를 인자로 받음 (순수 함수). UNION: `ceil(total / union_row_batch)` 요청; Error: 행당 2요청; Boolean: 행당 21 + 평균글자 × 5요청
 - `_ensure_render_deps()` — 렌더링 모드 진입 시 `playwright` 패키지와 Chromium 바이너리를 lazy 설치. 프로세스 내 1회만 설치 시도(전역 캐시). 성공 `True` / 실패 `False` 반환(정적 크롤 폴백 신호). 최초 설치 시 pip playwright(수 MB) + Chromium 바이너리(~150MB)를 내려받는다.
+- `_ensure_jsanalysis_deps()` — JS 데이터플로우 분석 모드 진입 시 `esprima`(순수 파이썬, import명·pip 패키지명 동일)를 lazy 설치. 반환값 없음(설치 실패 시 예외 그대로 전파).
 
 ### 3-1-1. 속도 조절 옵션
 
@@ -160,12 +164,13 @@ REST API 엔드포인트:
 ### 3-3. `dashboard/dashboard.html` — 프론트엔드 SPA
 
 - 다크 테마, CSS 변수 시스템
-- 사이드바 5개 페이지 (3개 그룹): SCAN(정보수집 OSINT / 스캔 실행 / 스캔 히스토리) · EXPLOIT(데이터 추출 SQLi) · UTILITY(엑셀 취합)
+- 사이드바 6개 페이지 (3개 그룹): SCAN(정보수집 OSINT / 스캔 실행 / 스캔 히스토리) · EXPLOIT(데이터 추출 SQLi) · UTILITY(엑셀 취합 / JS 데이터플로우 분석)
 - 스캔 실행 페이지: URL / Timeout / 모듈 토글, 진행률 800ms 폴링, findings 아코디언
 - 히스토리 페이지: 과거 스캔 목록 테이블
 - 데이터 추출 (SQLi) 페이지: 입력 폼 + fingerprint + 추출 마법사 (별도 모드, §5 참고)
 - 엑셀 취합 페이지: 다중 파일 업로드 + 스키마 합집합 병합 (별도 모드, §6 참고)
 - 정보수집 (OSINT) 페이지: 도메인 입력 + 소스 토글 + 진행률 800ms 폴링 + 결과 테이블/리포트 다운로드 (별도 모드, §7 참고)
+- JS 데이터플로우 분석 페이지: 다중 파일 업로드(.js/.html/.xfdl/.xadl/.xjs/.xml) + 함수 검색 + 상세(표/mermaid 그래프 뷰 토글) (별도 모드, 완전 동기 처리, §8 참고)
 
 ---
 
@@ -413,31 +418,37 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 
 ### 7-1. 하드 룰 — 순수 패시브
 
-**대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다.** 직접 접속하는 호스트는 아래 4개 제3자 소스뿐이다.
+**대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다.** 직접 접속하는 호스트는 아래 6개 제3자 소스뿐이다.
 
 | 소스 키 | 호스트 | 조회 내용 |
 |---------|--------|----------|
 | `crtsh` | crt.sh | CT(Certificate Transparency) 로그 → 서브도메인 + 인증서 메타 |
 | `wayback` | web.archive.org | Wayback Machine CDX 인덱스(`matchType=domain`) → 서브도메인 + 아카이브 URL (스냅샷 본문 미조회) |
+| `commoncrawl` | index.commoncrawl.org | Common Crawl 인덱스(CDX, 무키, 최신 3개 인덱스) → 서브도메인 + 관측 URL |
+| `urlscan` | urlscan.io | 기존 공개 스캔 결과 검색(search API, 무키·읽기 전용, 신규 스캔 제출 안 함) → 서브도메인 + 관측 URL |
+| `archivepaths` | web.archive.org | robots.txt/sitemap.xml **아카이브 스냅샷 본문** 파싱 → 선언된 엔드포인트 경로 (대상이 아닌 아카이브에서 읽음) |
 | `dns` | 8.8.8.8 / 1.1.1.1 | 공용 DNS 리졸버로 레코드 조회 (`dns.resolver.Resolver(configure=False)`로 OS 기본 리졸버 배제) |
 | `internetdb` | internetdb.shodan.io | Shodan이 사전 수집해 둔 IP별 포트 정보 (무키, 읽기 전용 — 온디맨드 스캔 아님) |
 
 ### 7-2. 오케스트레이션 — `run_recon()`
 
 ```
-1. crt.sh 조회        → 서브도메인 집합 확보 + 인증서 메타                [progress 10%]
-2. Wayback CDX 조회   → 서브도메인 집합 병합 + 아카이브 URL 확보          [progress 20%]
-3. 서브도메인 정렬 후 max_subdomains(기본 200, 10~1000)로 절단
-4. DNS 조회 (공용 리졸버만) → 절단된 각 host의 A/AAAA/(CNAME) 확인       [progress 20→80%]
-5. InternetDB 조회 → DNS로 확인된 각 IP의 포트/서비스 정보                [progress 80→100%]
+1. crt.sh 조회               → 서브도메인 집합 확보 + 인증서 메타              [progress 6%]
+2. Wayback CDX 조회          → 서브도메인 집합 병합 + URL 확보                [progress 12%]
+3. Common Crawl 조회         → 서브도메인 집합 병합 + URL 확보                [progress 20%]
+4. urlscan.io 조회           → 서브도메인 집합 병합 + URL 확보                [progress 26%]
+5. 아카이브 robots/sitemap 파싱 → 각 서브도메인의 아카이브 스냅샷에서 엔드포인트 추출 [progress 45%]
+6. 서브도메인 정렬 후 max_subdomains(기본 200, 10~1000)로 절단
+7. DNS 조회 (공용 리졸버만) → 절단된 각 host의 A/AAAA/(CNAME) 확인            [progress 45→85%]
+8. InternetDB 조회 → DNS로 확인된 각 IP의 포트/서비스 정보                    [progress 85→100%]
 ```
 
-`sources`에 `internetdb`만 선택해도 IP 확보를 위해 `dns`가 자동 포함된다. 각 단계 반복 지점에서 `modules/_cancel.py`의 `wait_or_cancel(stop_event, 0)`로 중단 요청을 즉시 검사한다. 반환 dict의 `subdomains`/`dns_records`/`certificates`/`archive_urls`/`ports`/`errors`/`meta` 필드 상세는 [modules/recon.md](modules/recon.md) 참고.
+`sources`에 `internetdb`만 선택해도 IP 확보를 위해 `dns`가 자동 포함된다. 각 단계 반복 지점에서 `modules/_cancel.py`의 `wait_or_cancel(stop_event, 0)`로 중단 요청을 즉시 검사한다. 수집된 URL은 소스별로 누적된 뒤 호스트 단위로 그룹핑되어 `subdomain_urls`(호스트별 URL+발견소스 목록)로 반환된다. 반환 dict의 `subdomains`/`dns_records`/`certificates`/`subdomain_urls`/`ports`/`errors`/`meta` 필드 상세는 [modules/recon.md](modules/recon.md) 참고.
 
 ### 7-3. 결과 저장
 
-- `generate_recon_html(result, output_dir)` — `reports/recon_<domain>_<timestamp>.html`. 서브도메인/DNS/인증서/아카이브 URL/포트 5개 섹션 + 상단 통계 카드.
-- `save_recon_to_excel(result, output_dir)` — `reports/recon_<domain>_<timestamp>.xlsx`. 시트 구성: `INFO`/`Subdomains`/`DNS`/`Certificates`/`ArchiveURLs`/`Ports`. 셀 sanitize: `=`/`+`/`-`/`@`/탭/CR로 시작하는 문자열에 `'` prefix (Excel formula injection 차단).
+- `generate_recon_html(result, output_dir)` — `reports/recon_<domain>_<timestamp>.html`. 서브도메인/DNS/인증서/서브도메인별 URL/포트 5개 섹션 + 상단 통계 카드.
+- `save_recon_to_excel(result, output_dir)` — `reports/recon_<domain>_<timestamp>.xlsx`. 시트 구성: `INFO`/`Subdomains`/`DNS`/`Certificates`/`SubdomainURLs`/`Ports`. 셀 sanitize: `=`/`+`/`-`/`@`/탭/CR로 시작하는 문자열에 `'` prefix (Excel formula injection 차단).
 
 ### 7-4. API
 
@@ -468,3 +479,75 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 ```
 
 `recon_jobs` dict는 인메모리 저장이며, 완료/취소/에러 후 1시간(`JOB_TTL_SEC`) 경과한 job은 다음 `/api/recon/start` 호출 시 TTL GC로 정리된다.
+
+---
+
+## 8. JS 데이터플로우 분석 (별도 모드)
+
+본 섹션은 SpaceScan의 JS/HTML/XFDL/XADL/XJS/XML 정적 데이터플로우 분석 모드를 설명한다. 탐지 모듈(§4)·SQLi 추출(§5)·엑셀 취합(§6)·정보수집(§7)과 인터페이스를 공유하지 않으며, 사용자가 대시보드 "JS 데이터플로우 분석" 탭에서 직접 진입한다. 구현체는 [modules/js_analysis.py](modules/js_analysis.py)이며 모듈 상세는 [modules/js_analysis.md](modules/js_analysis.md)를 참고한다.
+
+### 8-1. 하드 룰 — 완전 오프라인
+
+**이 모듈은 어떤 외부 호스트로도 요청을 보내지 않는다.** 업로드된 바이트만 읽어 esprima(순수 파이썬 JS 파서)로 파싱한다. HTML의 `<script src="...">` 외부 참조는 URL 문자열만 기록할 뿐 절대 fetch하지 않는다.
+
+### 8-2. 지원 입력 형식
+
+| 확장자 | 추출 방식 |
+|--------|-----------|
+| `.js` | 파일 전체를 단일 유닛(스크립트)으로 파싱 |
+| `.html` / `.htm` | `<script>` 블록(stdlib `html.parser` 기반, 관대한 파싱) + 인라인 이벤트 핸들러 속성(`onclick` 등 화이트리스트 44종) 값을 각각 별도 유닛으로 추출. 외부 `<script src="...">`는 URL만 `external_refs`에 기록 |
+| `.xfdl` / `.xadl` / `.xml` | 투비소프트 Nexacro/XPlatform 폼·앱정의 XML. `xml.etree.ElementTree`로 파싱해 `<Script>` 엘리먼트의 CDATA를 유닛으로 추출 |
+| `.xjs` | Nexacro 스크립트 파일. 우선 위와 동일한 XML(`<Script>` 루트) 파싱을 시도하고, XML 파싱 실패 시(순수 JS로 저장된 경우) 파일 전체를 단일 JS 유닛으로 폴백 |
+
+지원하지 않는 확장자는 `files[].kind = "unsupported"`로 표시되고 분석 없이 스킵된다(배치 중단 없음). 하나의 유닛이 파싱에 실패해도 `parse_errors`에 기록만 하고 같은 파일의 나머지 유닛·다른 파일은 계속 처리된다(단, `.js`는 파일 전체가 유닛 1개이므로 실패 시 그 파일 전체가 스킵됨).
+
+### 8-3. 분석 설계 — 3단계(함수 인벤토리 → 함수 내부 데이터플로우 → 파일 간 모듈 의존 관계)
+
+**1단계 — 함수 인벤토리 (`_collect_functions`)**: 유닛의 AST를 재귀 순회하며 함수 선언식/표현식/화살표 함수를 모두 찾는다. 이름 없는 함수 표현식은 대입 위치에서 이름 힌트를 끌어온다(`const login = function(){}` → `login`, 클래스 메서드 `Foo.bar(){}` → `Foo.bar`). 각 함수는 `{file}::{name}@{line}` 형식의 고유 id를 부여받는다.
+
+**2단계 — 함수 내부 데이터플로우 (`_analyze_dataflow`)**: 함수 본문을 스캔하여 지역변수 정의(`defs`)·반환(`returns`)·외부 호출(`out_calls`)과 각각의 의존 식별자(`depends_on`)를 추출한다. 흐름 비민감(flow-insensitive) 근사치로, if/else·루프 분기를 모두 순회하되 상호배타성은 구분하지 않는다(어떤 경로로도 도달 가능하면 의존관계로 기록). 중첩 함수 정의는 경계로 삼아 내려가지 않으며 별도 인벤토리 항목으로 자기 자신의 dataflow를 갖는다.
+
+**3단계 — 파일 간 모듈 의존 관계 (`_collect_module_info` → `_build_module_graph`)**: 유닛 파싱 중 ESM `import`/`export`(+ `export ... from` 재export)·CommonJS `require`/`module.exports`/`exports.x`·Nexacro `include "lib::common.xjs";`·HTML `<script src>`를 수집한다. 업로드가 `<input type="file" multiple>`/드래그앤드롭 기반이라 폴더 구조가 보존되지 않으므로, 경로형 지정자는 **베이스네임만으로** 업로드된 파일명 집합과 매칭한다(`_normalize_specifier`). 동일 베이스네임이 여러 개 업로드되면 "ambiguous"로 미해소 처리한다. 재export 체인은 `(file, name)` 방문 집합으로 순환을 방지하며 원본 정의까지 추적한다(`_resolve_export_chain`). 결과는 `modules.edges`(해소된 관계: `{from, to, kind, specifier}`, kind ∈ `import`/`require`/`include`/`script`)와 `modules.unresolved`(미해소: `{from, specifier, kind, reason}`)로 구성된다.
+
+**호출 대상 해소 우선순위 (`_resolve_call_targets`)**: 각 `out_calls` 항목은 다음 순서로 해소를 시도하며, 성공한 첫 단계의 등급이 `resolution`에 기록되고 해소된 함수 id 목록이 `resolved_ids`에 채워진다.
+1. **import/require 바인딩** — `obj.foo()` 형태에서 `obj`가 namespace import/require로 바인딩된 경우 해당 모듈 파일 내 `foo`를 조회 (`resolution="import"`/`"require"`)
+2. **동일 파일 내 로컬 일치** — 같은 파일 내 이름이 일치하는 함수 (`resolution="local"`)
+3. **include/script 공유 스코프** — Nexacro `include` 또는 HTML `<script src>`로 연결된 파일들 중 이름이 일치하는 함수(두 경우 모두 `resolution="include"`로 표기 — 전역 스코프 공유라는 동일한 의미)
+4. **이름 매칭 폴백** — 위 단계가 모두 실패하면 전체 함수 중 이름이 일치하는 모든 후보로 연결 (`resolution="name"`, 과다 연결 가능)
+5. 위 어느 것도 해당 없으면 `resolution="unresolved"`, `resolved_ids=[]`
+
+**전역 호출 그래프**: `analyze()` 마지막 단계에서 모든 `out_calls`에 대해 위 해소 절차를 적용해 `resolved_ids`를 채우고, 이를 바탕으로 각 함수의 `called_by`(호출자 id 역인덱스)를 구성한다. 단일 파일만 업로드된 경우 import/require/include 관계가 없으므로 항상 2번(local) 또는 4번(name) 단계로 귀결되어 기존 이름 기반 매칭과 동일한 결과를 낸다.
+
+### 8-4. Mermaid 그래프 생성
+
+세 종류의 mermaid(`graph LR`) 소스를 생성한다(구현: `to_mermaid_call_graph` / `to_mermaid_dataflow` / `to_mermaid_module_graph`).
+
+- **호출 그래프** (`to_mermaid_call_graph(analysis, center_id=None, max_nodes=120, depth=1, cross_file_only=False)`): `center_id` 미지정 시 전체 함수(최대 `max_nodes`개)를, 지정 시 해당 함수를 중심으로 `resolved_ids` 기반 BFS로 `depth`홉(1~5, 기본 1)까지 확장한 서브그래프를 그린다. 중심 노드는 강조 스타일(주황색 채움)로 표시. `cross_file_only=True`이면 같은 파일 내부 호출 엣지는 숨기고 파일 경계를 넘는 엣지만 표시(노드 자체는 유지).
+- **데이터플로우 그래프** (`to_mermaid_dataflow(func, analysis=None, expand=False, max_nodes=80)`): 함수 하나를 대상으로 좌→우 흐름(param 노드[둥근 모양] → 지역변수 정의 노드[사각] → return/외부호출 노드[알약 모양])을 그린다. `expand=True`이고 `analysis`가 주어지면, `out_calls`가 `resolved_ids`로 해소된(단일 대상) 호출의 경우 그 대상 함수의 데이터플로우를 재귀적으로 인라인 전개한다(인자→파라미터 위치 바인딩, 방문 집합으로 순환 방지, `max_nodes` 도달 시 확장 중단).
+- **모듈 의존 그래프** (`to_mermaid_module_graph(analysis, max_nodes=120)`): `analyze()`가 구성한 `modules.edges`를 파일 단위 노드로 시각화한다. 엣지 라벨에 관계 종류(`import`/`require`/`include`/`script`)를 표시.
+
+노드 라벨은 파일명/함수명/코드 조각 등 업로드 콘텐츠 기반 문자열이므로 `_mmd_escape()`로 따옴표·개행 제거 및 길이 제한(50~60자) 후 삽입한다. 프론트엔드는 mermaid.js를 CDN이 아닌 로컬 번들(`static/vendor/mermaid.min.js`)로 서빙하며 `securityLevel:'strict'`로 초기화한다(노드 라벨에 업로드 파일명·코드 조각이 들어가는 신뢰할 수 없는 데이터이므로).
+
+### 8-5. API
+
+동기 처리(백그라운드 job/폴링 없음) — 파싱은 순수 CPU 연산이고 네트워크 요청이 없어 즉시 완료된다.
+
+| 메서드 | 경로 | 용도 |
+|--------|------|------|
+| POST | `/api/jsanalysis/analyze` | multipart/form-data: `files`(여러 파일). 응답: `{analysis_id, files, function_count, module_edge_count, module_unresolved_count}`. 결과는 서버 `jsanalysis_jobs` dict에 `analysis_id`로 캐시(TTL 1시간) |
+| GET | `/api/jsanalysis/<id>/search` | 쿼리파라미터 `name`(함수명)·`file`(파일명) 부분/대소문자 무관 일치 검색. 응답: `{results}` |
+| GET | `/api/jsanalysis/<id>/function` | 쿼리파라미터 `id`(함수id). 응답: `{function}` (defs/returns/out_calls/called_by 전체, out_calls 각 항목에 resolved_ids/resolution 포함) |
+| GET | `/api/jsanalysis/<id>/modules` | 파일 간 import/require/include/script-src 의존 관계 목록. 응답: `{edges, unresolved}` |
+| GET | `/api/jsanalysis/<id>/graph` | 쿼리파라미터 `kind`(`call`\|`dataflow`\|`module`, 기본 `call`)·`id`(call/dataflow에서 사용, call은 중심 함수 지정 시 서브그래프·미지정 시 전체 그래프, dataflow는 필수, module은 불필요)·`depth`(call 전용, 1~5, 기본 1)·`cross_file_only`(call 전용, `1`/`true`/`yes`)·`expand`(dataflow 전용, `1`/`true`/`yes`). 응답: `{mermaid}` |
+
+`jsanalysis_jobs` dict는 인메모리 저장이며, 분석은 동기 처리라 생성 시점 = 완료 시점이므로 `created_at` 기준 1시간(`JOB_TTL_SEC`) 경과 시 다음 `/api/jsanalysis/analyze` 호출 진입부에서 TTL GC로 정리된다.
+
+### 8-6. 알려진 한계 (설계 단계에서 사용자와 합의된 근사치 분석 범위)
+
+- 파서가 esprima(순수 파이썬)이므로 **ES2017까지만 지원**한다. optional chaining(`?.`), nullish coalescing(`??`) 등 ES2020+ 문법은 해당 유닛의 파싱 실패로 이어져 `parse_errors`에 기록되고 스킵된다.
+- 파일 간 관계 해소는 **베이스네임 매칭**이다(업로드가 폴더 구조를 보존하지 않으므로). 동일 베이스네임이 여러 개 업로드되면 어느 파일을 가리키는지 판별할 수 없어 "ambiguous"로 미해소 처리한다.
+- 호출 그래프는 import/require/include/script-src로 우선 연결하고, 이 경로로 해소되지 않으면 **이름 기반 매칭**으로 폴백한다. 동적 디스패치(`obj[key]()`), `eval`, 클로저로 캡처된 외부 스코프 변수는 추적하지 않는다.
+- 데이터플로우는 **흐름 비민감(flow-insensitive) 근사치**다. 조건 분기의 상호배타성을 구분하지 않고 모든 경로를 도달 가능한 것으로 간주한다. 데이터플로우 확장(`expand=1`)은 `resolved_ids`가 단일 대상으로 해소된 호출만 전개하며, 이름 매칭 폴백(여러 후보)이나 미해소 호출은 전개하지 않는다.
+- XFDL/XADL/XJS/XML `<Script>` 블록 내부 라인 번호는 **블록 상대 라인**이다(파일 전체 절대 라인 매핑 미구현). 실제 Nexacro 샘플로 검증하지 못한 부분이다.
+- 투비소프트 Nexacro **xscript**(ECMAScript 상위 방언)의 매개변수 타입 어노테이션(`function f(obj:Form)`), `<>` 부등호 연산자는 esprima 원본 파싱이 실패했을 때만 길이 보존 방식(공백/동일 길이 치환)으로 무력화해 재시도한다(`_sanitize_xscript`). 표준 JS는 1차 파싱에서 성공하므로 영향 없음. `include "...";` 지시문은 별도로 파일 간 모듈 의존 관계로 추적된다(위 3단계 참고).
+- XFDL/XADL/XML이 XML 금지 제어문자(0x00~0x1F 중 tab/LF/CR 제외)를 포함해 원본 파싱이 실패하면, 해당 바이트를 공백으로 치환해 재시도한다(`_strip_illegal_xml_bytes`). UTF-16 등 원본이 정상 파싱되는 인코딩에는 적용되지 않는다.

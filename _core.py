@@ -396,6 +396,20 @@ def _ensure_recon_deps() -> None:
         print(f"  [OK] {', '.join(missing)} 설치 완료\n")
 
 
+def _ensure_jsanalysis_deps() -> None:
+    """JS/HTML/XFDL 분석 모드 진입 시점에 esprima를 lazy 설치한다.
+
+    esprima는 순수 파이썬 패키지이며 import명·pip 패키지명이 동일하다.
+    """
+    import importlib.util
+    if importlib.util.find_spec("esprima") is None:
+        import subprocess
+        print("  [*] esprima 설치 중...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install",
+                               "--quiet", "esprima"])
+        print("  [OK] esprima 설치 완료\n")
+
+
 def _estimate_dump(ctx, total_rows: int) -> Dict[str, float]:
     """dump 예상 요청 수 / 소요시간 계산 (순수 함수, 출력 없음).
 
