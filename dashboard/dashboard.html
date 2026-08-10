@@ -250,6 +250,18 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
 .mrg-per-file .skipped { color:var(--critical); }
 .mrg-per-file .new-cols { color:var(--green); font-size:10px; }
 .mrg-warn { font-size:12px; color:var(--medium); background:rgba(251,191,36,.08); border:1px solid rgba(251,191,36,.2); border-radius:7px; padding:10px 14px; margin-top:10px; }
+/* 열린 포트(InternetDB) 표 전용 — IP/포트/호스트명/CVE 열 폭 확보 (.mrg-per-file 공통 규칙 덮어씀) */
+.recon-port-scroll { overflow-x:auto; }
+#recon-port-table td.rp-ip { white-space:nowrap; word-break:normal; }
+#recon-port-table td.rp-ports { word-break:normal; min-width:24ch; }
+#recon-port-table td.rp-hosts { word-break:normal; min-width:22ch; }
+#recon-port-table td.rp-hosts div { white-space:nowrap; }
+#recon-port-table td.rp-hosts div:not(:last-child) { margin-bottom:4px; }
+/* CVE — 쉼표 구분 인라인 나열. 줄바꿈은 쉼표 사이에서만 일어나고 CVE ID 자체는 안 쪼개짐 */
+#recon-port-table td.rp-cve { word-break:normal; }
+#recon-port-table td.rp-cve a, #recon-port-table td.rp-cve span { white-space:nowrap; }
+#recon-port-table td.rp-cve a { color:var(--high); text-decoration:none; }
+#recon-port-table td.rp-cve a:hover { text-decoration:underline; }
 .jsa-mermaid-wrap { overflow:auto; background:var(--surf2); border:1px solid var(--border); border-radius:8px; padding:18px; margin-top:12px; min-height:200px; }
 .jsa-mermaid-wrap svg { max-width:100%; height:auto; display:block; margin:0 auto; }
 </style>
@@ -1166,7 +1178,7 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             </div>
             <div class="fg" style="flex:1">
               <label>Timeout (초)</label>
-              <input id="recon-timeout" class="finput" type="number" value="8" min="3" max="30" />
+              <input id="recon-timeout" class="finput" type="number" value="30" min="3" max="30" />
             </div>
             <div class="fg" style="flex:1">
               <label>서브도메인 DNS 확인 상한</label>
@@ -1230,17 +1242,30 @@ body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',sans
             <tbody id="recon-sub-body"></tbody>
           </table>
 
-          <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">수집 URL — 서브도메인별</div>
-          <table class="mrg-per-file" id="recon-url-table">
-            <thead><tr><th>서브도메인</th><th>URL</th><th>발견 소스</th></tr></thead>
-            <tbody id="recon-url-body"></tbody>
+          <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">DNS 레코드</div>
+          <table class="mrg-per-file" id="recon-dns-table">
+            <thead><tr><th>호스트</th><th>타입</th><th>값</th></tr></thead>
+            <tbody id="recon-dns-body"></tbody>
           </table>
 
+          <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">수집 URL — 서브도메인별 (아래에서 서브도메인 선택)</div>
+          <div class="ext-list" id="recon-url-host-list"></div>
+
+          <div id="recon-url-detail" hidden style="margin-top:14px">
+            <div class="card-title" style="font-size:13px;margin-bottom:4px" id="recon-url-detail-title">엔드포인트</div>
+            <table class="mrg-per-file" id="recon-url-table">
+              <thead><tr><th>URL</th><th>발견 소스</th></tr></thead>
+              <tbody id="recon-url-body"></tbody>
+            </table>
+          </div>
+
           <div class="card-title" style="font-size:13px;margin-top:20px;margin-bottom:4px">열린 포트 (Shodan InternetDB)</div>
+          <div class="recon-port-scroll">
           <table class="mrg-per-file" id="recon-port-table">
-            <thead><tr><th>IP</th><th>열린 포트</th><th>호스트명</th><th>알려진 취약점(CVE)</th></tr></thead>
+            <thead><tr><th>IP</th><th>열린 포트</th><th>호스트명</th><th>알려진 취약점(CVE) — 클릭 시 NVD 상세 페이지</th></tr></thead>
             <tbody id="recon-port-body"></tbody>
           </table>
+          </div>
         </div>
 
       </div><!-- /pg-recon -->
@@ -4036,6 +4061,8 @@ function jsaReset() {
 // ── 정보수집 (OSINT) ──────────────────────────────────────────────────────
 let reconJobId = null;
 let reconPollTimer = null;
+let _reconSubdomainUrls = {};   // 마지막 결과의 subdomain_urls 캐시 — 서브도메인 선택 시 조회용
+let _reconSelectedUrlHost = null;
 
 async function reconStart() {
   const errEl = document.getElementById('recon-error');
@@ -4047,7 +4074,7 @@ async function reconStart() {
   const sources = [...document.querySelectorAll('#recon-src-grid input:checked')].map(c => c.value);
   if (!sources.length) { errEl.textContent = '최소 하나의 수집 소스를 선택하세요.'; errEl.hidden = false; return; }
 
-  const timeout = parseInt(document.getElementById('recon-timeout').value) || 8;
+  const timeout = parseInt(document.getElementById('recon-timeout').value) || 30;
   const maxSubdomains = parseInt(document.getElementById('recon-max-subdomains').value) || 200;
 
   document.getElementById('recon-btn').disabled = true;
@@ -4169,50 +4196,94 @@ function _reconShowResults(job) {
     subBody.appendChild(tr);
   });
 
-  // 수집 URL 표 — 서브도메인별 그룹 (Wayback/Common Crawl/urlscan.io/아카이브 robots·sitemap에서
-  // 온 외부 값, 자격증명 등이 원본 그대로 포함될 수 있음) — textContent로 삽입
-  const urlBody = document.getElementById('recon-url-body');
-  urlBody.innerHTML = '';
-  const subdomainUrls = result.subdomain_urls || {};
-  Object.keys(subdomainUrls).sort().forEach(host => {
-    subdomainUrls[host].forEach(entry => {
-      const tr = document.createElement('tr');
+  // DNS 레코드 표 — 호스트/값은 대상이 응답한 외부 값(악의적 값 가능) — textContent로 삽입
+  const dnsBody = document.getElementById('recon-dns-body');
+  dnsBody.innerHTML = '';
+  const dnsRecords = result.dns_records || {};
+  Object.keys(dnsRecords).sort().forEach(host => {
+    Object.keys(dnsRecords[host]).forEach(rtype => {
+      (dnsRecords[host][rtype] || []).forEach(val => {
+        const tr = document.createElement('tr');
 
-      const tdHost = document.createElement('td');
-      tdHost.textContent = host;
+        const tdHost = document.createElement('td');
+        tdHost.textContent = host;
 
-      const tdUrl = document.createElement('td');
-      tdUrl.textContent = entry.url;
+        const tdType = document.createElement('td');
+        tdType.textContent = rtype;
 
-      const tdSrc = document.createElement('td');
-      tdSrc.textContent = (entry.sources || []).join(', ') || '-';
+        const tdVal = document.createElement('td');
+        tdVal.textContent = val;
 
-      tr.appendChild(tdHost);
-      tr.appendChild(tdUrl);
-      tr.appendChild(tdSrc);
-      urlBody.appendChild(tr);
+        tr.appendChild(tdHost);
+        tr.appendChild(tdType);
+        tr.appendChild(tdVal);
+        dnsBody.appendChild(tr);
+      });
     });
   });
 
-  // 포트 표 — IP/호스트명/CVE는 Shodan InternetDB에서 온 외부 값(악의적 값 가능) — textContent로 삽입
+  // 수집 URL — 서브도메인 선택 리스트 (선택한 서브도메인의 엔드포인트만 상세 표에 표시)
+  _reconSubdomainUrls = result.subdomain_urls || {};
+  _reconSelectedUrlHost = null;
+  document.getElementById('recon-url-detail').hidden = true;
+  _reconRenderUrlHostList();
+
+  // 포트 표 — IP/호스트명/CVE는 Shodan InternetDB에서 온 외부 값(악의적 값 가능) — textContent/createElement로만 삽입
   const portBody = document.getElementById('recon-port-body');
   portBody.innerHTML = '';
+  const CVE_RE = /^CVE-\d{4}-\d+$/;
   Object.keys(result.ports || {}).forEach(ip => {
     const info = result.ports[ip];
     const tr = document.createElement('tr');
 
     const tdIp = document.createElement('td');
+    tdIp.className = 'rp-ip';
     tdIp.textContent = ip;
 
     const tdPorts = document.createElement('td');
+    tdPorts.className = 'rp-ports';
     tdPorts.textContent = (info.ports || []).join(', ');
 
+    // 호스트명 — 하나씩 별도 줄(div)로 렌더링해 한 줄에 하나씩 보이도록 고정
     const tdHosts = document.createElement('td');
-    tdHosts.textContent = (info.hostnames || []).join(', ') || '-';
+    tdHosts.className = 'rp-hosts';
+    const hostnames = info.hostnames || [];
+    if (hostnames.length > 0) {
+      hostnames.forEach(h => {
+        const line = document.createElement('div');
+        line.textContent = h;
+        tdHosts.appendChild(line);
+      });
+    } else {
+      tdHosts.textContent = '-';
+    }
 
+    // CVE — 쉼표로 구분된 인라인 나열(각 CVE가 이미 링크이므로 줄 구분 불필요),
+    // 형식이 CVE-YYYY-NNNN에 정확히 맞을 때만 NVD 링크 생성
+    // (Shodan 데이터는 외부 값이므로 정규식 불일치 시 href 없이 텍스트로만 표시 — href 인젝션 방지)
     const tdVulns = document.createElement('td');
-    tdVulns.textContent = (info.vulns || []).join(', ') || '-';
-    if ((info.vulns || []).length > 0) tdVulns.style.color = 'var(--high)';
+    tdVulns.className = 'rp-cve';
+    const vulns = info.vulns || [];
+    if (vulns.length > 0) {
+      vulns.forEach((cve, i) => {
+        if (CVE_RE.test(cve)) {
+          const a = document.createElement('a');
+          a.href = 'https://nvd.nist.gov/vuln/detail/' + cve;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          a.textContent = cve;
+          tdVulns.appendChild(a);
+        } else {
+          const span = document.createElement('span');
+          span.textContent = cve;
+          span.style.color = 'var(--high)';
+          tdVulns.appendChild(span);
+        }
+        if (i < vulns.length - 1) tdVulns.appendChild(document.createTextNode(', '));
+      });
+    } else {
+      tdVulns.textContent = '-';
+    }
 
     tr.appendChild(tdIp);
     tr.appendChild(tdPorts);
@@ -4222,6 +4293,54 @@ function _reconShowResults(job) {
   });
 
   document.getElementById('recon-result-card').hidden = false;
+}
+
+// 수집 URL — 서브도메인 선택 리스트를 렌더링한다 (선택 상태에 따라 하이라이트).
+// host는 crt.sh/Wayback/Common Crawl/urlscan.io에서 온 외부 값(악의적 값 가능) — textContent로만 삽입
+function _reconRenderUrlHostList() {
+  const hostListEl = document.getElementById('recon-url-host-list');
+  hostListEl.innerHTML = '';
+  const urlHosts = Object.keys(_reconSubdomainUrls).sort();
+  if (urlHosts.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'ext-list-empty';
+    empty.textContent = '수집된 URL이 없습니다.';
+    hostListEl.appendChild(empty);
+    return;
+  }
+  urlHosts.forEach(host => {
+    const item = document.createElement('div');
+    item.className = 'ext-list-item' + (host === _reconSelectedUrlHost ? ' selected' : '');
+    item.textContent = `${host}  (${_reconSubdomainUrls[host].length}개)`;
+    item.onclick = () => _reconSelectUrlHost(host);
+    hostListEl.appendChild(item);
+  });
+}
+
+// 선택한 서브도메인의 엔드포인트(URL) 목록을 상세 표에 표시한다.
+// url/sources는 Wayback/Common Crawl/urlscan.io/아카이브 robots·sitemap에서 온 외부 값
+// (악의적 값 가능) — textContent로만 삽입
+function _reconSelectUrlHost(host) {
+  _reconSelectedUrlHost = host;
+  _reconRenderUrlHostList();
+
+  document.getElementById('recon-url-detail-title').textContent = `엔드포인트 — ${host}`;
+  const urlBody = document.getElementById('recon-url-body');
+  urlBody.innerHTML = '';
+  (_reconSubdomainUrls[host] || []).forEach(entry => {
+    const tr = document.createElement('tr');
+
+    const tdUrl = document.createElement('td');
+    tdUrl.textContent = entry.url;
+
+    const tdSrc = document.createElement('td');
+    tdSrc.textContent = (entry.sources || []).join(', ') || '-';
+
+    tr.appendChild(tdUrl);
+    tr.appendChild(tdSrc);
+    urlBody.appendChild(tr);
+  });
+  document.getElementById('recon-url-detail').hidden = false;
 }
 
 </script>

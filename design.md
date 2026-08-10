@@ -418,11 +418,11 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 
 ### 7-1. 하드 룰 — 순수 패시브
 
-**대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다.** 직접 접속하는 호스트는 아래 6개 제3자 소스뿐이다.
+**대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다.** 직접 접속하는 호스트는 아래 7개 제3자 소스뿐이다.
 
 | 소스 키 | 호스트 | 조회 내용 |
 |---------|--------|----------|
-| `crtsh` | crt.sh | CT(Certificate Transparency) 로그 → 서브도메인 + 인증서 메타 |
+| `crtsh` | crt.sh (실패/타임아웃 시 api.certspotter.com 무키 폴백) | CT(Certificate Transparency) 로그 → 서브도메인 + 인증서 메타 |
 | `wayback` | web.archive.org | Wayback Machine CDX 인덱스(`matchType=domain`) → 서브도메인 + 아카이브 URL (스냅샷 본문 미조회) |
 | `commoncrawl` | index.commoncrawl.org | Common Crawl 인덱스(CDX, 무키, 최신 3개 인덱스) → 서브도메인 + 관측 URL |
 | `urlscan` | urlscan.io | 기존 공개 스캔 결과 검색(search API, 무키·읽기 전용, 신규 스캔 제출 안 함) → 서브도메인 + 관측 URL |
@@ -433,7 +433,7 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 ### 7-2. 오케스트레이션 — `run_recon()`
 
 ```
-1. crt.sh 조회               → 서브도메인 집합 확보 + 인증서 메타              [progress 6%]
+1. crt.sh 조회 (실패 시 certspotter 무키 폴백) → 서브도메인 집합 확보 + 인증서 메타  [progress 6%]
 2. Wayback CDX 조회          → 서브도메인 집합 병합 + URL 확보                [progress 12%]
 3. Common Crawl 조회         → 서브도메인 집합 병합 + URL 확보                [progress 20%]
 4. urlscan.io 조회           → 서브도메인 집합 병합 + URL 확보                [progress 26%]
@@ -454,7 +454,7 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 
 | 메서드 | 경로 | 용도 |
 |--------|------|------|
-| POST | `/api/recon/start` | job 생성 + 백그라운드 실행. 요청 필드: `domain`(필수), `sources`(배열, 기본 `SOURCE_KEYS` 전체), `timeout`(3~30초 범위 보정, 기본 8), `max_subdomains`(10~1000 범위 보정, 기본 200) |
+| POST | `/api/recon/start` | job 생성 + 백그라운드 실행. 요청 필드: `domain`(필수), `sources`(배열, 기본 `SOURCE_KEYS` 전체), `timeout`(3~30초 범위 보정, 기본 30), `max_subdomains`(10~1000 범위 보정, 기본 200) |
 | GET | `/api/recon/<id>/status` | 진행 상태 폴링. `stop_event`/`html_report`/`excel_report`(절대경로) 제외, 대신 `has_html_report`/`has_excel_report` boolean 노출 |
 | POST | `/api/recon/<id>/cancel` | `stop_event.set()`으로 중단. 이미 종료(`completed`/`cancelled`/`error`) 상태면 400 |
 | GET | `/api/recon/<id>/report/html` | HTML 리포트 다운로드 (`send_file`) |

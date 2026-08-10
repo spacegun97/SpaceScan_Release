@@ -4,9 +4,11 @@ recon.py — 패시브 정보수집(OSINT) 정찰 모듈
 탐지 모듈(scan() 인터페이스)·SQLi 추출·엑셀 취합과 완전히 분리된 별도 모드.
 
 **하드 룰: 대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다
-(순수 패시브).** 이 모듈이 직접 접속하는 호스트는 아래 6개뿐이다.
+(순수 패시브).** 이 모듈이 직접 접속하는 호스트는 아래 7개뿐이다.
 
   - crt.sh                 : CT(Certificate Transparency) 로그 조회
+  - api.certspotter.com    : CT 로그 조회 (무키, 읽기 전용) — crt.sh가 타임아웃/실패할
+                             때만 호출되는 폴백. crt.sh가 응답하면 호출되지 않음
   - web.archive.org        : Wayback Machine CDX 인덱스 조회 + robots.txt/sitemap.xml
                              아카이브 스냅샷 본문 조회 (대상이 아닌 아카이브에서 읽음 —
                              대상 서버로는 요청이 가지 않음)
@@ -18,7 +20,7 @@ recon.py — 패시브 정보수집(OSINT) 정찰 모듈
   - internetdb.shodan.io   : Shodan이 사전 수집한 IP별 포트 정보 조회
                              (무키, 읽기 전용 — 온디맨드 스캔 API 아님)
 
-이 6개 외의 호스트로 requests가 나가는 코드 경로는 존재하지 않는다.
+이 7개 외의 호스트로 requests가 나가는 코드 경로는 존재하지 않는다.
 """
 import html as html_module
 import ipaddress
@@ -37,6 +39,8 @@ from modules._cancel import wait_or_cancel
 # ── 상수 ────────────────────────────────────────────────────────────────────
 
 CRTSH_URL = "https://crt.sh/"
+# crt.sh 타임아웃/실패 시 폴백 — 무키(SSLMate Certspotter issuances API)
+CERTSPOTTER_URL = "https://api.certspotter.com/v1/issuances"
 WAYBACK_CDX_URL = "http://web.archive.org/cdx/search/cdx"
 WAYBACK_AVAILABLE_URL = "http://archive.org/wayback/available"
 COMMONCRAWL_COLLINFO_URL = "https://index.commoncrawl.org/collinfo.json"
@@ -81,6 +85,11 @@ _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 _DOMAIN_RE = re.compile(
     r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$"
 )
+
+# CVE ID 형식 검증 — InternetDB(Shodan)의 vulns 값은 외부 입력이므로 이 패턴에
+# 정확히 일치할 때만 NVD 상세 페이지 링크를 생성한다(href 인젝션 방지).
+_CVE_RE = re.compile(r"^CVE-\d{4}-\d+$")
+NVD_DETAIL_URL = "https://nvd.nist.gov/vuln/detail/{cve}"
 
 
 # ── 도메인 검증 ──────────────────────────────────────────────────────────────
@@ -154,6 +163,51 @@ def query_crtsh(domain: str, timeout: int, session: requests.Session) -> Dict[st
     except Exception as e:
         return {"subdomains": subdomains, "certificates": certificates,
                 "error": f"crt.sh 조회 실패: {e}"}
+    return {"subdomains": subdomains, "certificates": certificates, "error": None}
+
+
+def query_certspotter(domain: str, timeout: int, session: requests.Session) -> Dict[str, Any]:
+    """Certspotter(SSLMate) issuances API 조회 — crt.sh 실패/타임아웃 시 폴백 전용.
+
+    무키로 호출한다(비인증 요청은 낮은 rate limit 적용 — crt.sh 실패 시에만
+    호출되므로 평상시 부담은 없다). 반환 구조는 query_crtsh()와 동일하게
+    맞춰 오케스트레이션에서 서로 바꿔 끼울 수 있게 한다.
+    """
+    subdomains: Set[str] = set()
+    certificates: List[Dict[str, Any]] = []
+    try:
+        resp = session.get(
+            CERTSPOTTER_URL,
+            params={
+                "domain": domain,
+                "include_subdomains": "true",
+                "expand": ["dns_names", "issuer"],
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        entries = resp.json()
+
+        seen_cert_ids: Set[Any] = set()
+        for entry in entries:
+            for name in entry.get("dns_names", []) or []:
+                name = (name or "").strip().lower().lstrip("*.")
+                if name and _is_in_scope(name, domain):
+                    subdomains.add(name)
+            cert_id = entry.get("id")
+            if cert_id is not None and cert_id not in seen_cert_ids:
+                seen_cert_ids.add(cert_id)
+                issuer = entry.get("issuer") or {}
+                certificates.append({
+                    "id": cert_id,
+                    "common_name": (entry.get("dns_names") or [""])[0],
+                    "issuer": issuer.get("name", ""),
+                    "not_before": entry.get("not_before", ""),
+                    "not_after": entry.get("not_after", ""),
+                })
+    except Exception as e:
+        return {"subdomains": subdomains, "certificates": certificates,
+                "error": f"certspotter 조회 실패: {e}"}
     return {"subdomains": subdomains, "certificates": certificates, "error": None}
 
 
@@ -525,15 +579,26 @@ def run_recon(domain: str, sources: List[str], *,
         for u in urls:
             url_sources.setdefault(u, set()).add(source)
 
-    # ── 1단계: 서브도메인 발굴 (crt.sh) ──────────────────────────────────────
+    # ── 1단계: 서브도메인 발굴 (crt.sh, 실패 시 certspotter 무키 폴백) ────────
     if "crtsh" in sources_set:
         wait_or_cancel(stop_event, 0)
         r = query_crtsh(domain, timeout, session)
-        _add_origin(r["subdomains"], "crtsh")
+        if r.get("error"):
+            # crt.sh 자체가 과부하로 자주 타임아웃되므로, 실패 시에만
+            # certspotter(무키)로 한 번 더 시도한다(평상시 호출 없음).
+            crtsh_error = r["error"]
+            wait_or_cancel(stop_event, 0)
+            fb = query_certspotter(domain, timeout, session)
+            if fb.get("error"):
+                errors.append({"source": "crtsh",
+                               "message": f"{crtsh_error} / certspotter 폴백도 실패: {fb['error']}"})
+            else:
+                r = fb
+                _add_origin(r["subdomains"], "certspotter")
+        else:
+            _add_origin(r["subdomains"], "crtsh")
         all_subdomains |= r["subdomains"]
         certificates = r["certificates"]
-        if r.get("error"):
-            errors.append({"source": "crtsh", "message": r["error"]})
     _report(6)
 
     # ── 2단계: 서브도메인 발굴 + URL 수집 (Wayback CDX) ─────────────────────
@@ -699,6 +764,20 @@ def _esc(v: Any) -> str:
     return html_module.escape(str(v if v is not None else "-"))
 
 
+def _cve_links_html(vulns: List[str]) -> str:
+    """CVE 목록을 쉼표로 구분된 인라인 NVD 링크(형식 불일치 시 일반 텍스트)로 렌더링한다."""
+    if not vulns:
+        return "-"
+    items = []
+    for cve in vulns:
+        if _CVE_RE.match(cve):
+            url = NVD_DETAIL_URL.format(cve=cve)
+            items.append(f'<a href="{_esc(url)}" target="_blank" rel="noopener noreferrer">{_esc(cve)}</a>')
+        else:
+            items.append(_esc(cve))
+    return ", ".join(items)
+
+
 def _recon_html_subdomains(subdomains: List[Dict[str, Any]]) -> str:
     if not subdomains:
         return '<div class="empty">발견된 서브도메인 없음</div>'
@@ -781,17 +860,17 @@ def _recon_html_ports(ports: Dict[str, Any]) -> str:
         port_list = ", ".join(str(p) for p in info.get("ports", []))
         hostnames = ", ".join(info.get("hostnames", []))
         cpes = ", ".join(info.get("cpes", []))
-        vulns = ", ".join(info.get("vulns", []))
+        vulns_html = _cve_links_html(info.get("vulns", []))
         rows.append(
             f'<tr><td><code>{_esc(ip)}</code></td>'
             f'<td><code>{_esc(port_list)}</code></td>'
             f'<td>{_esc(hostnames)}</td>'
             f'<td><code>{_esc(cpes)}</code></td>'
-            f'<td style="color:#fb923c">{_esc(vulns)}</td></tr>'
+            f'<td style="color:#fb923c">{vulns_html}</td></tr>'
         )
     return (
         '<div class="table-wrap"><table><thead><tr>'
-        '<th>IP</th><th>열린 포트</th><th>호스트명</th><th>CPE</th><th>알려진 취약점(CVE)</th>'
+        '<th>IP</th><th>열린 포트</th><th>호스트명</th><th>CPE</th><th>알려진 취약점(CVE) — 클릭 시 NVD 상세 페이지</th>'
         '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>'
     )
 
@@ -852,7 +931,7 @@ def generate_recon_html(result: Dict[str, Any], output_dir: str) -> str:
 <div class="sec-hd">DNS 레코드</div>
 {_recon_html_dns(result["dns_records"])}
 
-<div class="sec-hd">인증서 (CT 로그 — crt.sh)</div>
+<div class="sec-hd">인증서 (CT 로그 — crt.sh, 실패 시 certspotter 폴백)</div>
 {_recon_html_certs(result["certificates"])}
 
 <div class="sec-hd">수집 URL — 서브도메인별 (Wayback/Common Crawl/urlscan.io/아카이브 robots·sitemap){url_truncated_note}</div>
@@ -880,6 +959,23 @@ def _safe_cell(v: Any) -> Any:
     if isinstance(v, str) and v.startswith(_FORMULA_PREFIXES):
         return "'" + v
     return v
+
+
+def _cve_lines_text(vulns: List[str]) -> str:
+    """CVE 목록을 'CVE-ID  →  NVD URL' 형식으로 줄(\\n) 구분하여 반환한다.
+
+    Excel 셀은 하이퍼링크를 하나만 가질 수 있어 IP당 여러 CVE를 담을 수 없으므로,
+    URL을 텍스트로 노출해 복사해서 열람할 수 있게 한다(wrap_text 셀과 함께 사용).
+    """
+    if not vulns:
+        return ""
+    lines = []
+    for cve in vulns:
+        if _CVE_RE.match(cve):
+            lines.append(f"{cve}  →  {NVD_DETAIL_URL.format(cve=cve)}")
+        else:
+            lines.append(cve)
+    return "\n".join(lines)
 
 
 def save_recon_to_excel(result: Dict[str, Any], output_dir: str) -> str:
@@ -955,8 +1051,15 @@ def save_recon_to_excel(result: Dict[str, Any], output_dir: str) -> str:
             _safe_cell(", ".join(info.get("hostnames", []))),
             _safe_cell(", ".join(info.get("cpes", []))),
             _safe_cell(", ".join(info.get("tags", []))),
-            _safe_cell(", ".join(info.get("vulns", []))),
+            _safe_cell(_cve_lines_text(info.get("vulns", []))),
         ])
+    # Vulns 열은 CVE마다 "CVE-ID  →  NVD URL" 줄이 여러 개 들어갈 수 있어
+    # 폭을 넓히고 wrap_text를 적용해야 줄바꿈이 실제로 보인다.
+    from openpyxl.styles import Alignment
+    ws_ports.column_dimensions["F"].width = 60
+    for row in ws_ports.iter_rows(min_row=2, min_col=6, max_col=6):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     wb.save(fpath)
     return fpath

@@ -4,11 +4,11 @@
 
 대상 도메인의 서브도메인·DNS 레코드·인증서·서브도메인별 URL·열린 포트를 **순수 패시브**로 수집한다.
 
-**하드 룰: 대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다.** 직접 접속하는 호스트는 아래 6개뿐이다.
+**하드 룰: 대상 도메인·서브도메인·서버로는 어떤 요청도 직접 보내지 않는다.** 직접 접속하는 호스트는 아래 7개뿐이다.
 
 | 소스 | 호스트 | 조회 내용 |
 |------|--------|----------|
-| `crtsh` | crt.sh | CT(Certificate Transparency) 로그 → 서브도메인 + 인증서 메타 |
+| `crtsh` | crt.sh (실패/타임아웃 시 api.certspotter.com 무키 폴백) | CT(Certificate Transparency) 로그 → 서브도메인 + 인증서 메타 |
 | `wayback` | web.archive.org | Wayback Machine CDX 인덱스 → 서브도메인 + 아카이브 URL |
 | `commoncrawl` | index.commoncrawl.org | Common Crawl 인덱스(CDX, 무키) → 서브도메인 + 관측 URL |
 | `urlscan` | urlscan.io | 기존 공개 스캔 결과 검색(search API, 무키·읽기 전용) → 서브도메인 + 관측 URL |
@@ -44,12 +44,12 @@
 | 키 | 타입 | 설명 |
 |----|------|------|
 | `domain` | `str` | 대상 도메인 |
-| `subdomains` | `List[dict]` | `{"host", "alive", "sources"}` — `sources`는 발견 출처(`crtsh`/`wayback`/`commoncrawl`/`urlscan`) 목록 |
+| `subdomains` | `List[dict]` | `{"host", "alive", "sources"}` — `sources`는 발견 출처(`crtsh`/`certspotter`/`wayback`/`commoncrawl`/`urlscan`) 목록. `certspotter`는 crt.sh 실패 시 폴백으로 발견됐을 때만 등장 |
 | `dns_records` | `Dict[str, Dict[str, List[str]]]` | `{host: {record_type: [값, ...]}}` |
 | `certificates` | `List[dict]` | `{"id", "common_name", "issuer", "not_before", "not_after"}` |
 | `subdomain_urls` | `Dict[str, List[dict]]` | `{host: [{"url", "sources"}, ...]}` — 서브도메인별 그룹핑된 URL. `sources`는 `wayback`/`commoncrawl`/`urlscan`/`robots`/`sitemap` 조합. 호스트당 `MAX_URLS_PER_HOST`(200), 전체 `MAX_TOTAL_URLS`(3000) 상한 적용 |
 | `ports` | `Dict[str, dict]` | `{ip: {"ip","ports","hostnames","cpes","tags","vulns"}}` |
-| `errors` | `List[dict]` | `{"source", "message"}` — crt.sh/Wayback/Common Crawl/urlscan.io 조회 실패 시에만 기록 |
+| `errors` | `List[dict]` | `{"source", "message"}` — crt.sh(+certspotter 폴백 모두 실패한 경우만)/Wayback/Common Crawl/urlscan.io 조회 실패 시에만 기록 |
 | `meta` | `dict` | 아래 표 |
 
 `meta` 필드:
@@ -68,7 +68,11 @@
 
 ### `query_crtsh(domain, timeout, session) -> dict`
 
-crt.sh JSON API(`output=json`, `q=%.{domain}`) 조회. 반환: `{"subdomains": set, "certificates": list, "error": str|None}`. 실패해도 예외를 올리지 않고 `error` 필드로 알린다.
+crt.sh JSON API(`output=json`, `q=%.{domain}`) 조회. 반환: `{"subdomains": set, "certificates": list, "error": str|None}`. 실패해도 예외를 올리지 않고 `error` 필드로 알린다. `run_recon()`은 이 함수가 `error`를 반환하면 `query_certspotter()`로 자동 폴백한다(crt.sh가 자주 타임아웃되는 문제 대응).
+
+### `query_certspotter(domain, timeout, session) -> dict`
+
+Certspotter(SSLMate) issuances API(`api.certspotter.com`, 무키) 조회 — **crt.sh 실패/타임아웃 시에만 호출되는 폴백**이며 단독 소스 토글은 아니다. `include_subdomains=true`+`expand=dns_names,issuer`로 조회하며, 반환 구조는 `query_crtsh()`와 동일하게 `{"subdomains": set, "certificates": list, "error": str|None}`이라 오케스트레이션에서 서로 바꿔 끼울 수 있다.
 
 ### `query_wayback(domain, timeout, session) -> dict`
 
@@ -99,11 +103,15 @@ urlscan.io search API(`/api/v1/search/?q=domain:{domain}`, 무키)로 기존 공
 
 ### `generate_recon_html(result, output_dir) -> str`
 
-정보수집 결과를 다크 테마 HTML 리포트로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.html`. 서브도메인/DNS/인증서/서브도메인별 URL/포트 5개 섹션 + 상단 통계 카드로 구성.
+정보수집 결과를 다크 테마 HTML 리포트로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.html`. 서브도메인/DNS/인증서/서브도메인별 URL/포트 5개 섹션 + 상단 통계 카드로 구성. 포트 섹션의 CVE는 `_cve_links_html()`을 거쳐 쉼표로 구분된 인라인 NVD(nvd.nist.gov) 상세 페이지 링크로 렌더링된다(사용자가 직접 클릭할 때만 열리는 정적 링크 — 자동 조회가 아니므로 패시브 원칙에 영향 없음).
 
 ### `save_recon_to_excel(result, output_dir) -> str`
 
-정보수집 결과를 xlsx로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.xlsx`. 시트 구성: `INFO` / `Subdomains` / `DNS` / `Certificates` / `SubdomainURLs` / `Ports`. 수식 인젝션 방어: `=`/`+`/`-`/`@`/탭/CR로 시작하는 문자열에 `'` prefix 부착(`_safe_cell`).
+정보수집 결과를 xlsx로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.xlsx`. 시트 구성: `INFO` / `Subdomains` / `DNS` / `Certificates` / `SubdomainURLs` / `Ports`. 수식 인젝션 방어: `=`/`+`/`-`/`@`/탭/CR로 시작하는 문자열에 `'` prefix 부착(`_safe_cell`). `Ports` 시트의 Vulns 셀은 `_cve_lines_text()`를 거쳐 CVE마다 `CVE-ID  →  NVD URL` 줄이 개행(`\n`)으로 구분되어 들어간다(엑셀 셀은 하이퍼링크를 하나만 가질 수 있어 텍스트로 노출 — 복사해서 열람). 가독성을 위해 Vulns 열(F) 폭을 60으로 확장하고 `wrap_text=True`를 적용한다.
+
+### `_cve_links_html(vulns) -> str` / `_cve_lines_text(vulns) -> str`
+
+Shodan InternetDB의 `vulns`(CVE ID 목록, 외부 값)를 각각 HTML 링크 목록(`, ` 구분 인라인)과 Excel 텍스트 목록(`\n` 구분 — CVE마다 줄 분리, 링크가 없어 열람 편의상 줄바꿈 유지)으로 변환하는 공용 포매터. `CVE-\d{4}-\d+` 형식(`_CVE_RE`)에 정확히 일치하는 값만 `https://nvd.nist.gov/vuln/detail/{CVE-ID}` 링크로 만들고, 불일치 값은 일반 텍스트로만 표시한다(href/수식 인젝션 방지).
 
 ---
 
@@ -112,7 +120,7 @@ urlscan.io search API(`/api/v1/search/?q=domain:{domain}`, 무키)로 기존 공
 ### 오케스트레이션 흐름 (`run_recon`)
 
 ```
-1. crt.sh 조회              → 서브도메인 집합 ∪=, 인증서 목록 확보              [progress 6%]
+1. crt.sh 조회 (실패 시 certspotter 무키 폴백) → 서브도메인 집합 ∪=, 인증서 목록 확보  [progress 6%]
 2. Wayback CDX 조회         → 서브도메인 집합 ∪=, URL 확보(source=wayback)     [progress 12%]
 3. Common Crawl 조회        → 서브도메인 집합 ∪=, URL 확보(source=commoncrawl) [progress 20%]
 4. urlscan.io 조회          → 서브도메인 집합 ∪=, URL 확보(source=urlscan)    [progress 26%]
@@ -130,11 +138,11 @@ urlscan.io search API(`/api/v1/search/?q=domain:{domain}`, 무키)로 기존 공
 
 ### 스코프 필터링
 
-crt.sh/Wayback/Common Crawl/urlscan.io에서 얻은 이름 중 대상 도메인 자신이거나 그 서브도메인인 것만(`_is_in_scope`) 채택한다 — CT 로그·CDX 인덱스·검색 결과에 섞여 들어올 수 있는 무관 도메인을 배제한다. `subdomain_urls`로 그룹핑할 때도 각 URL의 호스트에 동일한 스코프 필터를 적용한다.
+crt.sh(또는 폴백된 certspotter)/Wayback/Common Crawl/urlscan.io에서 얻은 이름 중 대상 도메인 자신이거나 그 서브도메인인 것만(`_is_in_scope`) 채택한다 — CT 로그·CDX 인덱스·검색 결과에 섞여 들어올 수 있는 무관 도메인을 배제한다. `subdomain_urls`로 그룹핑할 때도 각 URL의 호스트에 동일한 스코프 필터를 적용한다.
 
 ### 서브도메인 출처 병합
 
-`origin: Dict[str, Set[str]]`에 호스트별 발견 소스(`crtsh`/`wayback`/`commoncrawl`/`urlscan`)를 누적하여 `subdomains[].sources`로 노출한다 — 동일 호스트가 여러 소스에서 발견되면 모두 표기된다. `archivepaths`(robots/sitemap)는 URL 수집 전용 소스로, 새 서브도메인을 발견하지 않고 이미 알려진 호스트의 엔드포인트만 보강한다.
+`origin: Dict[str, Set[str]]`에 호스트별 발견 소스(`crtsh`/`certspotter`/`wayback`/`commoncrawl`/`urlscan`)를 누적하여 `subdomains[].sources`로 노출한다 — 동일 호스트가 여러 소스에서 발견되면 모두 표기된다. `certspotter`는 crt.sh가 실패했을 때만 등장한다(둘이 동시에 origin에 섞이지 않음 — 폴백 성공 시 해당 실행의 CT 로그 출처는 certspotter로 대체됨). `archivepaths`(robots/sitemap)는 URL 수집 전용 소스로, 새 서브도메인을 발견하지 않고 이미 알려진 호스트의 엔드포인트만 보강한다.
 
 ---
 
@@ -142,7 +150,8 @@ crt.sh/Wayback/Common Crawl/urlscan.io에서 얻은 이름 중 대상 도메인 
 
 | 상황 | 처리 |
 |------|------|
-| crt.sh/Wayback/Common Crawl/urlscan.io 요청 실패(네트워크/파싱 오류) | 해당 소스만 건너뛰고 `errors`에 기록, 나머지 소스는 계속 진행 |
+| crt.sh 요청 실패(타임아웃 등) | certspotter(무키)로 자동 폴백. 폴백도 실패해야 `errors`에 기록 |
+| Wayback/Common Crawl/urlscan.io 요청 실패(네트워크/파싱 오류) | 해당 소스만 건너뛰고 `errors`에 기록, 나머지 소스는 계속 진행 |
 | Common Crawl 일부 인덱스만 실패 | 실패한 인덱스 id를 `error`에 나열하고 나머지 인덱스 결과로 계속 진행 (전체 실패 시에만 소스 전체 실패로 취급) |
 | Wayback availability API에 robots.txt/sitemap.xml 스냅샷 없음 | 해당 호스트는 조용히 건너뜀 (`errors`에 기록하지 않음 — 정상적으로 발생 가능한 상황) |
 | sitemap.xml 파싱 실패(XML 형식 오류 등) | 해당 사이트맵만 건너뛰고 나머지 호스트/사이트맵 계속 진행 |

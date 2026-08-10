@@ -1648,7 +1648,7 @@ def recon_start():
     if not sources:
         return jsonify({"error": "최소 하나 이상의 소스를 선택해야 합니다."}), 400
 
-    timeout = max(3, min(30, int(data.get("timeout", 8))))
+    timeout = max(3, min(30, int(data.get("timeout", 30))))
     max_subdomains = max(recon.MIN_MAX_SUBDOMAINS,
                          min(recon.MAX_MAX_SUBDOMAINS,
                              int(data.get("max_subdomains", recon.DEFAULT_MAX_SUBDOMAINS))))
