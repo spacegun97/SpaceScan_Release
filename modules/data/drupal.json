@@ -29,6 +29,40 @@
     {"path": "/web.config",                    "severity": "MEDIUM", "category": "sensitive_file"},
     {"path": "/.htaccess",                     "severity": "MEDIUM", "category": "sensitive_file"},
     {"path": "/xmlrpc.php",                    "severity": "MEDIUM", "category": "api_endpoint"},
-    {"path": "/cron.php",                      "severity": "MEDIUM", "category": "debug_endpoint"}
+    {"path": "/cron.php",                      "severity": "MEDIUM", "category": "debug_endpoint"},
+
+    {"path": "/user/password",                 "severity": "LOW",    "category": "default_resource"},
+    {"path": "/user/1",                        "severity": "LOW",    "category": "default_resource"},
+    {"path": "/user/0",                        "severity": "LOW",    "category": "default_resource"},
+    {"path": "/admin/people",                  "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/people/permissions",      "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/modules",                 "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/config/development/logging", "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/admin/config/system/site-information", "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/admin/reports/dblog",           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/admin/config/development/configuration/single/export", "severity": "MEDIUM", "category": "config_exposure"},
+
+    {"path": "/sites/default/files/private/",  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites/default/files/backup_migrate/", "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites/default/settings.php.bak","severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites/default/settings.php~",   "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites/default/settings.local.php", "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites/all/modules/",            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/sites/all/themes/",             "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/core/",                         "severity": "LOW",    "category": "default_resource"},
+    {"path": "/core/misc/drupal.js",           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/core/modules/",                 "severity": "LOW",    "category": "default_resource"},
+    {"path": "/modules/",                      "severity": "LOW",    "category": "default_resource"},
+    {"path": "/themes/",                       "severity": "LOW",    "category": "default_resource"},
+    {"path": "/profiles/",                     "severity": "LOW",    "category": "default_resource"},
+    {"path": "/composer.json",                 "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/composer.lock",                 "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/vendor/",                       "severity": "MEDIUM", "category": "sensitive_file"},
+
+    {"path": "/rest/session/token",            "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/user/logout",                   "severity": "LOW",    "category": "default_resource"},
+    {"path": "/batch",                         "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/system/files",                  "severity": "MEDIUM", "category": "api_endpoint"}
   ]
 }

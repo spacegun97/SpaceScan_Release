@@ -26,7 +26,7 @@
 
 사용자 입력(도메인 또는 URL 형태)에서 스킴·포트·경로를 제거하고 호스트명만 추출한다. 형식이 올바르지 않으면 `ValueError`.
 
-### `run_recon(domain, sources, *, timeout=8, max_subdomains=200, progress_cb=None, stop_event=None) -> dict`
+### `run_recon(domain, sources, *, timeout=8, max_subdomains=200, exclude_static=True, progress_cb=None, stop_event=None) -> dict`
 
 | 인자 | 타입 | 설명 |
 |------|------|------|
@@ -34,6 +34,7 @@
 | `sources` | `List[str]` | `SOURCE_KEYS = ("crtsh", "wayback", "dns", "commoncrawl", "urlscan", "archivepaths", "internetdb")` 부분집합 |
 | `timeout` | `int` | 각 HTTP/DNS 요청 타임아웃(초) |
 | `max_subdomains` | `int` | DNS 확인 대상 서브도메인 상한 (기본 200, 범위 10~1000) |
+| `exclude_static` | `bool` | `True`(기본값)면 `STATIC_ASSET_EXTENSIONS` 확장자 URL을 URL 상한 적용 전에 제외 |
 | `progress_cb` | `Callable[[int, int], None]` | `(current, total=100)` 형식의 백분율 콜백 — 단계 경계마다 호출 |
 | `stop_event` | `threading.Event` | set되면 `modules._cancel.ScanCancelled`를 던져 즉시 중단 |
 
@@ -47,7 +48,7 @@
 | `subdomains` | `List[dict]` | `{"host", "alive", "sources"}` — `sources`는 발견 출처(`crtsh`/`certspotter`/`wayback`/`commoncrawl`/`urlscan`) 목록. `certspotter`는 crt.sh 실패 시 폴백으로 발견됐을 때만 등장 |
 | `dns_records` | `Dict[str, Dict[str, List[str]]]` | `{host: {record_type: [값, ...]}}` |
 | `certificates` | `List[dict]` | `{"id", "common_name", "issuer", "not_before", "not_after"}` |
-| `subdomain_urls` | `Dict[str, List[dict]]` | `{host: [{"url", "sources"}, ...]}` — 서브도메인별 그룹핑된 URL. `sources`는 `wayback`/`commoncrawl`/`urlscan`/`robots`/`sitemap` 조합. 호스트당 `MAX_URLS_PER_HOST`(200), 전체 `MAX_TOTAL_URLS`(3000) 상한 적용 |
+| `subdomain_urls` | `Dict[str, List[dict]]` | `{host: [{"url", "sources"}, ...]}` — 서브도메인별 그룹핑된 URL. `sources`는 `wayback`/`commoncrawl`/`urlscan`/`robots`/`sitemap` 조합. `exclude_static=True`면 정적 리소스 확장자 URL을 먼저 제외한 뒤 호스트당 `MAX_URLS_PER_HOST`(200), 전체 `MAX_TOTAL_URLS`(3000) 상한 적용 |
 | `ports` | `Dict[str, dict]` | `{ip: {"ip","ports","hostnames","cpes","tags","vulns"}}` |
 | `errors` | `List[dict]` | `{"source", "message"}` — crt.sh(+certspotter 폴백 모두 실패한 경우만)/Wayback/Common Crawl/urlscan.io 조회 실패 시에만 기록 |
 | `meta` | `dict` | 아래 표 |
@@ -65,6 +66,8 @@
 | `resolved_ip_count` | DNS로 확인된 고유 IP 수 |
 | `url_total` | `subdomain_urls`에 최종 포함된 URL 총수 |
 | `url_truncated` | 호스트당/전체 URL 상한 초과로 일부가 생략됐는지 여부 |
+| `exclude_static` | 정적 리소스 확장자 URL 제외 여부 (`run_recon(exclude_static=...)` 값 그대로) |
+| `url_excluded_static` | `exclude_static=True`일 때 제외된 정적 리소스 URL 수 |
 
 ### `query_crtsh(domain, timeout, session) -> dict`
 
@@ -101,13 +104,17 @@ urlscan.io search API(`/api/v1/search/?q=domain:{domain}`, 무키)로 기존 공
 
 `internetdb.shodan.io/{ip}` 무키 조회. 404(데이터 없음)면 `None`. 실패 시에도 예외 없이 `None` 반환(개별 IP 단위 실패는 조용히 건너뜀).
 
+### `_is_static_asset(url) -> bool`
+
+URL 경로의 마지막 세그먼트(파일명) 확장자가 `STATIC_ASSET_EXTENSIONS`에 속하는지 확인한다. 쿼리스트링/프래그먼트는 `urlparse()`가 path와 분리해 주므로 `/logo.png?v=2` 같은 URL도 정상적으로 정적 리소스로 판별되며, 디렉터리 세그먼트에 점이 있어도(`/v1.2/api/data`) 오탐하지 않는다.
+
 ### `generate_recon_html(result, output_dir) -> str`
 
-정보수집 결과를 다크 테마 HTML 리포트로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.html`. 서브도메인/DNS/인증서/서브도메인별 URL/포트 5개 섹션 + 상단 통계 카드로 구성. 포트 섹션의 CVE는 `_cve_links_html()`을 거쳐 쉼표로 구분된 인라인 NVD(nvd.nist.gov) 상세 페이지 링크로 렌더링된다(사용자가 직접 클릭할 때만 열리는 정적 링크 — 자동 조회가 아니므로 패시브 원칙에 영향 없음).
+정보수집 결과를 다크 테마 HTML 리포트로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.html`. 서브도메인/DNS/인증서/서브도메인별 URL/포트 5개 섹션 + 상단 통계 카드로 구성. 포트 섹션의 CVE는 `_cve_links_html()`을 거쳐 쉼표로 구분된 인라인 NVD(nvd.nist.gov) 상세 페이지 링크로 렌더링된다(사용자가 직접 클릭할 때만 열리는 정적 링크 — 자동 조회가 아니므로 패시브 원칙에 영향 없음). 수집 URL 섹션 제목에는 `meta.exclude_static=True`일 때 제외된 정적 리소스 URL 수(`meta.url_excluded_static`)가 함께 표시된다.
 
 ### `save_recon_to_excel(result, output_dir) -> str`
 
-정보수집 결과를 xlsx로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.xlsx`. 시트 구성: `INFO` / `Subdomains` / `DNS` / `Certificates` / `SubdomainURLs` / `Ports`. 수식 인젝션 방어: `=`/`+`/`-`/`@`/탭/CR로 시작하는 문자열에 `'` prefix 부착(`_safe_cell`). `Ports` 시트의 Vulns 셀은 `_cve_lines_text()`를 거쳐 CVE마다 `CVE-ID  →  NVD URL` 줄이 개행(`\n`)으로 구분되어 들어간다(엑셀 셀은 하이퍼링크를 하나만 가질 수 있어 텍스트로 노출 — 복사해서 열람). 가독성을 위해 Vulns 열(F) 폭을 60으로 확장하고 `wrap_text=True`를 적용한다.
+정보수집 결과를 xlsx로 저장하고 절대경로를 반환한다. 파일명: `recon_{domain_}_{YYYYMMDD_HHMMSS}.xlsx`. 시트 구성: `INFO` / `Subdomains` / `DNS` / `Certificates` / `SubdomainURLs` / `Ports`. `INFO` 시트에는 `Exclude Static Assets`(제외 여부)·`Excluded Static URL Count`(제외된 URL 수) 행이 포함된다. 수식 인젝션 방어: `=`/`+`/`-`/`@`/탭/CR로 시작하는 문자열에 `'` prefix 부착(`_safe_cell`). `Ports` 시트의 Vulns 셀은 `_cve_lines_text()`를 거쳐 CVE마다 `CVE-ID  →  NVD URL` 줄이 개행(`\n`)으로 구분되어 들어간다(엑셀 셀은 하이퍼링크를 하나만 가질 수 있어 텍스트로 노출 — 복사해서 열람). 가독성을 위해 Vulns 열(F) 폭을 60으로 확장하고 `wrap_text=True`를 적용한다.
 
 ### `_cve_links_html(vulns) -> str` / `_cve_lines_text(vulns) -> str`
 
@@ -140,6 +147,10 @@ Shodan InternetDB의 `vulns`(CVE ID 목록, 외부 값)를 각각 HTML 링크 �
 
 crt.sh(또는 폴백된 certspotter)/Wayback/Common Crawl/urlscan.io에서 얻은 이름 중 대상 도메인 자신이거나 그 서브도메인인 것만(`_is_in_scope`) 채택한다 — CT 로그·CDX 인덱스·검색 결과에 섞여 들어올 수 있는 무관 도메인을 배제한다. `subdomain_urls`로 그룹핑할 때도 각 URL의 호스트에 동일한 스코프 필터를 적용한다.
 
+### 정적 리소스 필터링
+
+`exclude_static=True`(기본값)면 `subdomain_urls` 그룹핑 시 스코프 필터 통과 직후, **URL 상한(`MAX_URLS_PER_HOST`/`MAX_TOTAL_URLS`) 카운트 전에** `_is_static_asset()`로 정적 리소스를 제외한다. URL 경로의 마지막 세그먼트(파일명) 확장자가 `STATIC_ASSET_EXTENSIONS`(`gif`/`jpg`/`jpeg`/`png`/`webp`/`svg`/`ico`/`css`/`woff`/`woff2`/`mp4`)에 속하면 제외되며, 제외된 개수는 `meta.url_excluded_static`에 누적된다. 상한 적용보다 먼저 걸러지므로, 정적 리소스가 상한 자리를 차지해 실제 엔드포인트가 밀려나는 일이 없다(예: 총 300개 URL 중 정적 리소스 200개 + 상한 200이면, 정적 리소스를 먼저 제외한 나머지 100개가 상한 내에서 모두 노출된다).
+
 ### 서브도메인 출처 병합
 
 `origin: Dict[str, Set[str]]`에 호스트별 발견 소스(`crtsh`/`certspotter`/`wayback`/`commoncrawl`/`urlscan`)를 누적하여 `subdomains[].sources`로 노출한다 — 동일 호스트가 여러 소스에서 발견되면 모두 표기된다. `certspotter`는 crt.sh가 실패했을 때만 등장한다(둘이 동시에 origin에 섞이지 않음 — 폴백 성공 시 해당 실행의 CT 로그 출처는 certspotter로 대체됨). `archivepaths`(robots/sitemap)는 URL 수집 전용 소스로, 새 서브도메인을 발견하지 않고 이미 알려진 호스트의 엔드포인트만 보강한다.
@@ -159,6 +170,7 @@ crt.sh(또는 폴백된 certspotter)/Wayback/Common Crawl/urlscan.io에서 얻�
 | InternetDB 404 또는 조회 실패 | 해당 IP는 `ports`에서 생략 (개별 실패는 `errors`에 기록하지 않음) |
 | 서브도메인 수가 `max_subdomains` 초과 | 정렬 후 상한까지만 DNS 조회, `meta.subdomain_truncated=True` |
 | URL 수가 호스트당/전체 상한 초과 | 상한까지만 `subdomain_urls`에 포함, `meta.url_truncated=True` |
+| 정적 리소스 확장자 URL (`exclude_static=True`, 기본값) | 상한 카운트 전에 제외, `meta.url_excluded_static`에 개수 누적 (상한 자리를 차지하지 않음) |
 | `sources`에 `internetdb`만 포함 | `dns`를 자동 포함(IP 확보 필수) |
 | 잘못된 도메인 형식 입력 | `normalize_domain()`에서 `ValueError` |
 | 중단 요청(`stop_event.set()`) | 각 단계 반복 지점에서 `ScanCancelled` 발생, 즉시 중단 |

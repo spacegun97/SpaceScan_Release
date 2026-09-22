@@ -56,6 +56,20 @@
     {"path": "/fckeditor/editor/lang/",                                                  "severity": "LOW",    "category": "default_resource"},
     {"path": "/fckeditor/_samples/asp.net/",                                             "severity": "LOW",    "category": "sample_app"},
     {"path": "/fckeditor2/",                                                             "severity": "LOW",    "category": "default_resource"},
-    {"path": "/FCKeditor2/",                                                             "severity": "LOW",    "category": "default_resource"}
+    {"path": "/FCKeditor2/",                                                             "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/fckeditor/editor/filemanager/browser/default/connectors/aspx/upload.aspx",  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/fckeditor/editor/filemanager/browser/default/connectors/asp/upload.asp",    "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/fckeditor/editor/filemanager/browser/default/connectors/jsp/upload",        "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/fckeditor/editor/filemanager/connectors/spanish/connector.pl",               "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/js/fckeditor/",                                                           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/editor/fckeditor/",                                                       "severity": "LOW",    "category": "default_resource"},
+    {"path": "/lib/fckeditor/",                                                          "severity": "LOW",    "category": "default_resource"},
+    {"path": "/assets/fckeditor/",                                                       "severity": "LOW",    "category": "default_resource"},
+    {"path": "/UserFiles/",                                                              "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/userfiles/",                                                              "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/UserFiles/File/",                                                         "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/UserFiles/Image/",                                                        "severity": "MEDIUM", "category": "default_resource"}
   ]
 }

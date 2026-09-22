@@ -55,6 +55,26 @@
     {"path": "/dext5upload/dext5uploader.php",                 "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/dext5upload/dext5down.jsp",                     "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/dext5upload/dext5down.aspx",                    "severity": "MEDIUM", "category": "api_endpoint"},
-    {"path": "/dext5upload/dext5down.php",                     "severity": "MEDIUM", "category": "api_endpoint"}
+    {"path": "/dext5upload/dext5down.php",                     "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/dext5upload/dext5uploaddata.ashx",              "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/dext5upload/handler/dext5handler.do",           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/dext5upload/dext5down.ashx",                    "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/dext5upload/dext5down.do",                      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/dext5upload/dext5delete.jsp",                   "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/dext5upload/dext5delete.aspx",                  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/dext5upload/dext5delete.php",                   "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/editor/dext5upload/",                           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/board/dext5upload/",                            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/inc/dext5upload/",                               "severity": "LOW",    "category": "default_resource"},
+    {"path": "/include/dext5upload/",                          "severity": "LOW",    "category": "default_resource"},
+    {"path": "/asset/dext5upload/",                            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/assets/dext5upload/",                           "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/dext5editor/dext5editor.pack.js",               "severity": "LOW",    "category": "default_resource"},
+    {"path": "/dext5upload/dext5upload.pack.js",               "severity": "LOW",    "category": "default_resource"},
+    {"path": "/dext5editor/dext5editor_config.js",             "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/dext5upload/dext5upload_config.js",             "severity": "LOW",    "category": "config_exposure"}
   ]
 }

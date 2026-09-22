@@ -33,6 +33,51 @@
     {"path": "/wp-activate.php",               "severity": "LOW",    "category": "default_resource"},
     {"path": "/.htaccess",                     "severity": "MEDIUM", "category": "sensitive_file"},
     {"path": "/wp-content/",                   "severity": "LOW",    "category": "default_resource"},
-    {"path": "/wp-json/wooconvo/v1/download-file?order_id=1&filename=", "severity": "MEDIUM", "category": "api_endpoint"}
+    {"path": "/wp-json/wooconvo/v1/download-file?order_id=1&filename=", "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/wp-admin/admin-ajax.php?action=revslider_show_image", "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-admin/network/",             "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/user-new.php",         "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/options-general.php",  "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/plugin-editor.php",    "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/theme-editor.php",     "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/plugins.php",          "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/upload.php",           "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wp-admin/export.php",           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-admin/import.php",           "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/wp-json/wp/v2/",                "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-json/wp/v2/posts",           "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-json/wp/v2/pages",           "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-json/wp/v2/media",           "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-json/wc/v3/",                "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-json/wc/v2/",                "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wp-json/oembed/1.0/embed",      "severity": "LOW",    "category": "api_endpoint"},
+
+    {"path": "/wp-content/plugins/",           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/wp-content/themes/",            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/wp-content/backup-db/",         "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/uploads/backup/",    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/cache/",             "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/wp-content/updraft/",           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/uploads/wpforms/",   "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/plugins/akismet/readme.txt", "severity": "LOW", "category": "config_exposure"},
+    {"path": "/wp-content/plugins/revslider/readme.txt", "severity": "LOW", "category": "config_exposure"},
+    {"path": "/wp-content/plugins/wp-file-manager/readme.txt", "severity": "LOW", "category": "config_exposure"},
+    {"path": "/wp-content/debug.txt",          "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/db.php",             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-content/wp-cache-config.php","severity": "LOW",    "category": "config_exposure"},
+
+    {"path": "/xmlrpc.php?rsd",                "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/wp-admin/admin-ajax.php?action=heartbeat", "severity": "LOW", "category": "api_endpoint"},
+    {"path": "/wp-mail.php",                   "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-comments-post.php",          "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wp-load.php",                   "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wp-settings.php",               "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/wp-blog-header.php",            "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/wp1/",                          "severity": "LOW",    "category": "default_resource"},
+    {"path": "/wordpress/",                    "severity": "LOW",    "category": "default_resource"},
+    {"path": "/blog/",                         "severity": "LOW",    "category": "default_resource"}
   ]
 }

@@ -34,6 +34,30 @@
     {"path": "/index.jsp",                             "severity": "LOW",    "category": "default_resource"},
     {"path": "/favicon.ico",                           "severity": "LOW",    "category": "default_resource"},
     {"path": "/console/framework/skins/",              "severity": "LOW",    "category": "default_resource"},
-    {"path": "/wl_ldi_mp/",                            "severity": "LOW",    "category": "default_resource"}
+    {"path": "/wl_ldi_mp/",                            "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/console/login/LoginForm.jsp?_nfpb=true", "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/console/images/",                       "severity": "LOW",    "category": "default_resource"},
+    {"path": "/console/actions/",                      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wsm-pm/",                               "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/coherence-web-spi/",                    "severity": "LOW",    "category": "api_endpoint"},
+
+    {"path": "/fileservlet/",                          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/fileservlet",                           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/integration/services/",                 "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/soa-infra/",                            "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/soa-infra/deployer",                    "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/wsm/",                                  "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/bpm/",                                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/analytics/",                            "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/servlet/JspServlet",                    "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/hello/HelloWorldServlet",               "severity": "LOW",    "category": "sample_app"},
+    {"path": "/uddi/",                                 "severity": "LOW",    "category": "api_endpoint"},
+
+    {"path": "/servers/",                              "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/config/",                               "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/config/config.xml",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wlsutil/",                              "severity": "LOW",    "category": "api_endpoint"}
   ]
 }

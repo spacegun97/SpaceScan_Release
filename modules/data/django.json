@@ -20,6 +20,49 @@
     {"path": "/requirements.txt",                 "severity": "LOW",    "category": "sensitive_file"},
     {"path": "/static/admin/",                    "severity": "LOW",    "category": "default_resource"},
     {"path": "/static/rest_framework/",           "severity": "LOW",    "category": "default_resource"},
-    {"path": "/media/",                           "severity": "MEDIUM", "category": "sensitive_file"}
+    {"path": "/media/",                           "severity": "MEDIUM", "category": "sensitive_file"},
+
+    {"path": "/admin/login/?next=/admin/",        "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/auth/user/",                 "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/password_change/",           "severity": "LOW",    "category": "admin_console"},
+    {"path": "/admin/jsi18n/",                    "severity": "LOW",    "category": "default_resource"},
+    {"path": "/admin/doc/",                       "severity": "MEDIUM", "category": "config_exposure"},
+
+    {"path": "/asgi.py",                          "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/urls.py",                          "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/local_settings.py",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/settings/local.py",                "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/settings/production.py",           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/settings/base.py",                 "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/env.py",                           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/secrets.json",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/Pipfile",                          "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/Pipfile.lock",                     "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/poetry.lock",                      "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/pyproject.toml",                   "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/setup.py",                         "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/tox.ini",                          "severity": "LOW",    "category": "config_exposure"},
+
+    {"path": "/graphql/",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/graphiql",                         "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/api/schema/",                      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/api/docs/",                        "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/api/token/",                       "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/api/token/refresh/",               "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/rest-auth/login/",                 "severity": "LOW",    "category": "api_endpoint"},
+
+    {"path": "/celery/",                          "severity": "LOW",    "category": "status_page"},
+    {"path": "/rq/",                              "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/django-rq/",                       "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/prometheus/metrics",               "severity": "MEDIUM", "category": "status_page"},
+
+    {"path": "/static/CACHE/",                    "severity": "LOW",    "category": "default_resource"},
+    {"path": "/staticfiles/",                     "severity": "LOW",    "category": "default_resource"},
+    {"path": "/media/uploads/",                   "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/logs/django.log",                  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/debug.log",                        "severity": "MEDIUM", "category": "sensitive_file"},
+
+    {"path": "/500",                              "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/robots.txt",                       "severity": "LOW",    "category": "config_exposure"}
   ]
 }

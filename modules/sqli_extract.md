@@ -26,21 +26,25 @@ SQLite + Error 조합, 그리고 SQLite + `position` in `{where_case, orderby}` 
 
 세 기법은 사용자가 명시적으로 선택하며 자동 fallback은 하지 않는다 (실패 시 호출부가 재선택 메뉴 제공). `fingerprint(ctx)` 단계는 사용자 delay와 무관하게 **최소 0.3s/요청**(`FINGERPRINT_DELAY_FLOOR`)을 강제한다.
 
-`fingerprint` 단계는 아래 순서로 진행한다.
+`fingerprint(ctx)`는 실제 탐지 로직(`_fingerprint_run`)을 감싼 래퍼다 — boolean 기법에서 `_fingerprint_run`이 `WAFBlockedError` 또는 컨텍스트 자동 탐지 실패(`_ContextDetectFailed`)로 실패하면, `=` 판별식이 WAF에 차단된 것으로 의심해 `ctx.use_like=True`로 전환 후 ctx를 호출 시점 상태로 되돌려 **1회 한정 재시도**한다(재시도도 실패하면 그대로 전파, 재귀 없음). 폴백 발생 사실은 서버 콘솔 로그로만 남기며 fingerprint 결과·엑셀 meta에는 노출하지 않는다. Error/UNION 기법은 폴백 대상이 아니다.
+
+`_fingerprint_run` 단계는 아래 순서로 진행한다.
 
 **1단계 — DBMS 식별:** CASE WHEN 에러 오라클 페이로드가 DBMS에 따라 달라지므로 컨텍스트 탐지 전에 DBMS를 먼저 식별한다.
 
 **2단계 — 컨텍스트 + 위치 탐지:** `position="custom"`이면 사용자가 `blind_template`에 qc·구조 전부를 포함하므로 컨텍스트 탐지·위치 탐지를 모두 스킵한다. 그 외의 경우 `_detect_context`가 `quote_context`와 `position`을 통합 탐지한다. 두 단계 페이즈로 구성된다.
-- **Phase 1 (WHERE AND 위치)**: `quote_context=None`이면 `CONTEXT_CANDIDATES`(`["'", '"', "')", '")', "'))", ")", ""]`) 우선순위로 후보마다 두 가지 판정을 시도한다. ① Boolean 판정 — `AND 1=1` / `AND 1=2` 응답 유사도 0.9 미만이면 채택 (`position="where"` 확정). ② 에러 전이 판정 — Boolean 실패 시 후보 단독 주입으로 에러 시그니처 발생 여부 판정 (error-based 전용 환경 커버, numeric 후보 제외). Phase 1 성공 시 `position="where"`로 확정.
+- **Phase 1 (WHERE AND/OR 위치)**: `quote_context=None`이면 `CONTEXT_CANDIDATES`(`["'", '"', "')", '")', "'))", ")", ""]`) 우선순위로 후보마다 판정을 시도한다. ① Boolean 판정 — `AND 1=1` / `AND 1=2` 응답 유사도 0.9 미만이면 채택 (`position="where"`, `bool_operator="AND"` 확정). ①' AND 폴백(technique=`boolean` 전용) — ① 실패 시 `OR 1=1` / `OR 1=2`로 재시도. 원본 파라미터 값이 애초에 빈 결과를 반환하는 쿼리면 AND로는 true/false가 구분되지 않기 때문이며, 성공 시 `bool_operator="OR"`로 확정 (error/union 기법의 컨텍스트 탐지는 OR 폴백 없이 기존 AND 방식 그대로 유지). ② 에러 전이 판정 — ①/①' 모두 실패 시 후보 단독 주입으로 에러 시그니처 발생 여부 판정 (error-based 전용 환경 커버, numeric 후보 제외). Phase 1 성공 시 `position="where"`로 확정.
 - **Phase 2 (CASE WHEN 에러 오라클 위치)**: technique=`boolean` + `dbms in COND_ERR_SUBQUERY` 조건 하에 Phase 1 실패 후 시도한다. `where_case`(WHERE 절 CASE WHEN 에러 오라클), `orderby`(ORDER BY 절 CASE WHEN 에러 오라클) 순으로 탐지한다. TRUE 조건 응답에 에러 시그니처가 없고 TRUE/FALSE 응답 유사도 0.9 미만이면 채택.
 
-모든 후보가 탈락하면 `None` 반환 → 호출부가 수동 지정 메뉴를 띄운다.
+위 판별식(`1=1`/`1=2`/`1=0`)은 `ctx.use_like=True`(fingerprint 래퍼의 LIKE 폴백 진입 후)면 `'1' LIKE '1'` 형태로 대체된다 — Phase 2 `where_case`의 `1=(CASE ...)` 구조식도 동일하게 `'1' LIKE (CASE ...)`로 바뀐다. `orderby`는 비교 연산자가 없어 영향받지 않는다.
+
+모든 후보가 탈락하면 `None` 반환(`_ContextDetectFailed`) → fingerprint 래퍼가 LIKE 폴백을 시도하고, 그래도 실패하면 호출부가 수동 지정 메뉴를 띄운다.
 
 **3단계 — 충돌 검증:** SQLite + Error 또는 SQLite + `{where_case, orderby}` 조합이면 `UnsupportedTechniqueError` raise. `custom`은 사용자 완전 제어이므로 SQLite 제한 비적용.
 
 `fingerprint` 마지막 단계에서 선택된 기법의 **실제 추출 가능성 smoke test**를 1패킷 수행한다:
 - **Error**: `_error_extract(ctx, "SELECT 1")` → 응답에 마커가 반사되지 않으면 `UnsupportedTechniqueError`
-- **Boolean**: `_blind_compare` 1=1(true) vs 1=2(false) 분류 검증 → 동일 결과면 `UnsupportedTechniqueError`
+- **Boolean**: `_blind_compare` 1=1(true) vs 1=2(false)(`ctx.use_like=True`면 LIKE 판별식) 분류 검증 → 동일 결과면 `UnsupportedTechniqueError`(fingerprint 래퍼가 LIKE 폴백 재시도)
 - **UNION**: `_union_extract(ctx, "SELECT 1")` → 마커 반사 없으면 `UnsupportedTechniqueError`
 
 smoke test 실패 시 에러 메시지: `"{기법} 기법으로 추출할 수 없습니다."` (DBMS 식별 성공 여부와 무관하게 추출 불가 확정 시점에 사용자에게 즉시 통보).
@@ -80,8 +84,8 @@ MySQL/MariaDB에는 XPATH 문자열이 알파벳으로 시작하면 MySQL이 유
 
 | `position` | 페이로드 형태 | 사용 조건 |
 |------------|--------------|-----------|
-| `where` (기본) | `{qc} AND ({cond}) --` | WHERE 절 Boolean 차이 관찰 가능 환경 |
-| `where_case` | `{qc} AND 1=(CASE WHEN ({cond}) THEN 1 ELSE {err_sub} END) --` | WHERE Boolean은 안 보이나 DBMS 에러 발생 여부로 TRUE/FALSE 구분 가능 환경 |
+| `where` (기본) | `{qc} {AND\|OR} ({cond}) --` | WHERE 절 Boolean 차이 관찰 가능 환경. 연산자는 `ctx.bool_operator`(기본 `AND`, 빈 결과 대상은 `OR` 자동 폴백) |
+| `where_case` | `{qc} AND 1=(CASE WHEN ({cond}) THEN 1 ELSE {err_sub} END) --` (`ctx.use_like=True`면 `{qc} AND '1' LIKE (CASE WHEN ({cond}) THEN '1' ELSE {err_sub} END) --`) | WHERE Boolean은 안 보이나 DBMS 에러 발생 여부로 TRUE/FALSE 구분 가능 환경 |
 | `orderby` | `{qc},(CASE WHEN ({cond}) THEN 1 ELSE {err_sub} END) --` | ORDER BY 절 뒤에 위치한 인젝션 포인트 |
 | `custom` | `ctx.blind_template`의 `{cond}` 치환 | 자동 탐지가 불가한 비표준 구조 — qc·CASE WRAP·주석 모두 사용자 직접 작성 |
 
@@ -94,10 +98,11 @@ MySQL/MariaDB에는 XPATH 문자열이 알파벳으로 시작하면 MySQL이 유
 - 1행당 약 **421 요청** (`21 bits × 5` + 길이 21 bits, 평균 80자 가정, `use_hex=True` 기준). `use_hex=False`면 글자당 비교 횟수가 HEX 10회(2 hex-char×5) → raw 8회(0~255 범위)로 줄어 요청 수가 소폭 감소한다(ASCII/단일바이트 데이터 한정)
 - baseline은 quote_context 채택 직후 1회 캡처 (`_capture_baseline`):
   - `baseline_resp_text` (페이로드 없는 원본 2회) + `dynamic_contexts` (응답 변동 마스킹)
-  - `true_ref_text` (`AND (1=1)`) + `false_ref_text` (`AND (1=0)`) — **dual baseline 분류용**
+  - `true_ref_text` (`{AND|OR} (1=1)`) + `false_ref_text` (`{AND|OR} (1=0)`) — **dual baseline 분류용**. 연산자는 `_detect_context`가 이미 확정한 `ctx.bool_operator`를 그대로 사용
 - `_blind_compare` 응답 분류:
-  1. dual baseline 우선 — 응답을 `true_ref` / `false_ref` 양쪽과 sim 비교, 더 가까운 쪽으로 분류 (sqlmap 방식)
-  2. fallback — true/false reference 캡처 실패 시 단일 baseline `_similarity ≥ BLIND_SIM_THRESHOLD(0.95)` 비교
+  1. dual baseline 우선 — 응답을 `true_ref` / `false_ref` 양쪽과 sim 비교, 더 가까운 쪽으로 분류 (sqlmap 방식). `bool_operator`와 무관하게 true_ref/false_ref 자체가 이미 해당 연산자로 캡처되어 있어 그대로 동작
+  2. fallback — true/false reference 캡처 실패 시 단일 baseline `_similarity ≥ BLIND_SIM_THRESHOLD(0.95)` 비교. `bool_operator="OR"`이면 baseline(페이로드 없는 원본)이 false-상태에 해당하므로 판정을 반전한다(유사 → false, 비유사 → true)
+- `ctx.use_like=True`(fingerprint의 LIKE 폴백 진입 후)면 이분탐색 비교식의 `=`도 제거된다 — `_blind_int`의 0 판정은 `(expr)=0` 대신 `(expr)<1`(대상이 항상 LENGTH/COUNT라 0 이상 보장), `_blind_char_in_range`의 문자 코드 판정은 `<=mid` 대신 `<(mid+1)`(정수 비교라 의미 동일). 상한 탐색(`<upper`)·NULL 판정(`IS NULL`)은 원래도 `=`가 없어 변화 없음
 - 응답에 페이로드 결과가 echo되어 byte 단위 변동이 큰 환경(예: VulnShop)에서는 단일 baseline 임계값 비교가 경계에서 흔들리므로 dual baseline이 안정적
 - **Boolean-blind 전용 HEX 정규화 (`_blind_hex_expr`)**: `_blind_char_in_range`의 이분탐색 범위는 `[48,70]`(ASCII '0'~'F', 대문자 hex 전용)으로 고정된다. PostgreSQL `ENCODE(::bytea,'hex')`는 소문자 출력, MSSQL `fn_varbintohexstr`는 소문자 + `0x` 접두사를 붙여 이 범위를 벗어난다. Boolean 경로에서만 사용하는 `_blind_hex_expr`가 각각 `UPPER(ENCODE(...))`, `UPPER(SUBSTRING(...,3,MAX))`로 감싸 항상 대문자·접두사 없는 형태로 정규화한다. Error-based/UNION은 정규식+`_decode_hex`로 대소문자·접두사를 모두 처리하므로 이 정규화가 불필요하다.
 - HEX 함수 매핑: MySQL/MariaDB/SQLite=`HEX`, MSSQL=`master.dbo.fn_varbintohexstr` (`0x` prefix strip, Boolean에서는 추가로 `UPPER(SUBSTRING(…,3,MAX))`), PostgreSQL=`ENCODE(::bytea,'hex')` (Boolean에서는 `UPPER(ENCODE(…))`), Oracle=`RAWTOHEX(UTL_RAW.CAST_TO_RAW)`
@@ -157,11 +162,13 @@ MySQL/MariaDB에는 XPATH 문자열이 알파벳으로 시작하면 MySQL이 유
 | `union_visible_idx` | `int` | UNION visible 컬럼 인덱스 (자동 탐지 또는 수동 지정 결과) |
 | `union_visible_manual` | `Optional[int]` | 사용자 수동 지정 visible 컬럼 인덱스 (0-based). `None`이면 `_detect_union_visible` 자동 탐지 |
 | `union_row_batch` | `int` | UNION 행 묶음 크기. `1`=기존 1행씩. `N`=N행을 집계 함수로 한 요청에 추출 (기본 `1`; UI 기본 `10`) |
+| `bool_operator` | `str` | `"AND"`(기본) / `"OR"` — Boolean-blind `where` 위치 논리 연산자. `_detect_context`가 자동 결정 (수동 지정 시 `"AND"` 고정) |
+| `use_like` | `bool` | `False`(기본) — WAF가 `=`을 탐지·차단할 때의 자동 폴백 플래그. `fingerprint()`가 boolean 기법에서 `WAFBlockedError`/컨텍스트 탐지 실패를 만나면 `True`로 전환해 1회 재시도한다(재귀 없음). `True`면 판별식(`1=1` 등)이 `'1' LIKE '1'`로, 이분탐색 비교(`=0`, `<=mid`)가 `=` 없는 부등호(`<1`, `<mid+1`)로 바뀐다. Error/UNION 기법과 `orderby` 위치(비교 연산자 없음)는 영향 없음 |
 | `baseline_resp_text` | `Optional[str]` | Boolean-blind baseline 캐시 (페이로드 없는 응답) |
 | `dynamic_contexts` | `List[Tuple[str,str]]` | Dynamic content masking context 쌍 |
 | `waf_baseline_kws` | `List[str]` | baseline 응답에 자연 발생한 WAF 키워드 (오탐 마스킹) |
-| `true_ref_text` | `Optional[str]` | dual baseline — `AND (1=1)` reference 응답 |
-| `false_ref_text` | `Optional[str]` | dual baseline — `AND (1=0)` reference 응답 |
+| `true_ref_text` | `Optional[str]` | dual baseline — `{AND\|OR} (1=1)` reference 응답 (연산자는 `bool_operator`) |
+| `false_ref_text` | `Optional[str]` | dual baseline — `{AND\|OR} (1=0)` reference 응답 (연산자는 `bool_operator`) |
 | `masked_true_ref` | `Optional[str]` | `_capture_baseline`에서 1회 마스킹한 true_ref 캐시 — `_blind_compare`가 매 호출마다 재마스킹하지 않도록 |
 | `masked_false_ref` | `Optional[str]` | 동일 목적의 false_ref 마스킹 캐시 |
 | `masked_baseline` | `Optional[str]` | 단일 baseline 마스킹 캐시 (dual baseline 사용 불가 시 fallback용) |
@@ -195,10 +202,12 @@ MySQL/MariaDB에는 XPATH 문자열이 알파벳으로 시작하면 MySQL이 유
     "tables":    {db: list[str]},                    # {"db1": ["users", ...]}
     "columns":   {"db.tbl": list[str]},              # {"db1.users": ["id","name",...]}
     "dumps":     {"db.tbl": {"columns": list[str], "rows": list[list[str]]}},
-    "totals": {                                       # 리스트별 총개수 — 부분 추출 판정(이어받기 팝업)용
+    "totals": {                                       # 리스트별/행별 총개수 — 부분 추출 판정(이어받기 팝업·
+                                                        # 대시보드 상시 카운터 배지 표시)용
         "databases": int | None,
         "tables":    {db: int},
         "columns":   {"db.tbl": int},
+        "rows":      {"db.tbl": int},                 # 행 총개수 — dump estimate(COUNT) 최초 확정 시 채워짐
     },
     "search": {                                        # search() 실행 후에만 존재 (특수 검색모드 전용)
         "target":  str,                                 # "database" / "table" / "column"
@@ -209,7 +218,11 @@ MySQL/MariaDB에는 XPATH 문자열이 알파벳으로 시작하면 MySQL이 유
 }
 ```
 
-DB/테이블/컬럼 목록은 `total`(COUNT 결과)이 정해진 뒤에만 순번 기반 페이지네이션이 가능하므로, 각 목록은 최초 추출 시 COUNT를 1회 실행해 `totals`에 저장하고 이후에는 재사용한다 (boolean-blind COUNT는 15~20 요청 수준으로 비용이 커 재조회를 피함). 리스트 길이가 `totals`의 값에 못 미치면 부분 추출 상태이며, 이 경우 호출부(대시보드)가 이어받기 여부를 사용자에게 확인한다.
+DB/테이블/컬럼 목록은 `total`(COUNT 결과)이 정해진 뒤에만 순번 기반 페이지네이션이 가능하므로, 각 목록은 최초 추출 시 COUNT를 1회 실행해 `totals`에 저장하고 이후에는 재사용한다 (boolean-blind COUNT는 15~20 요청 수준으로 비용이 커 재조회를 피함). 리스트 길이가 `totals`의 값에 못 미치면 부분 추출 상태이며, 이 경우 호출부(대시보드)가 이어받기 여부를 사용자에게 확인한다. 행(dump) COUNT도 동일 원칙 — `dump` 액션의 견적(estimate, `confirm=false`) 단계에서 `totals["rows"]["db.tbl"]`에 이미 값이 있으면 재계산 없이 재사용하고, 없으면 COUNT 실행 후 채워 넣는다(엑셀에도 영속화되어 재사용 로드 후에도 재계산 없이 이어받기 가능).
+
+대시보드는 DB/테이블/컬럼/행 4단계 모두 위저드 어느 화면에서든 "현재 / 전체" 개수를 상시 배지로 표시하고, 부분 상태면 배지 옆에 인라인 [이어서 뽑기] 버튼을 노출한다 — 진입 시 뜨는 확인 모달에서 [아니요]를 눌러 그 화면 세션 동안 재확인을 껐더라도(`_extractResumeAcked`) 이 버튼은 항상 활성 상태로 남아 언제든 이어서 뽑을 수 있다. 상위 단계(예: DB)가 부분 추출 상태여도 하위 단계(테이블/컬럼/행) 추출은 서로 독립적으로 항상 가능하며, 위저드 단계를 오가도(뒤로가기·다른 DB/테이블 선택) 각 단계의 배지·이어받기 버튼은 직전 상태를 그대로 유지한다.
+
+세션을 넘긴(엑셀 재사용 로드 후) offset 기반 재개가 항상 같은 항목을 가리키도록, DB/테이블/컬럼 단건(OFFSET) 조회 쿼리는 각 DBMS의 배치(`_q_base_*`) 경로와 동일한 `ORDER BY` 기준을 사용한다. 행(dump) 페이지네이션은 안정적인 PK가 항상 보장되지는 않아, 선택된 컬럼들을 결합한 `row_select` 표현식 자체를 정렬 키로 재사용한다 — "삽입 순서 보존"이 아니라 "같은 표현식은 같은 실행에서 항상 같은 순서로 정렬된다"는 성질만으로 세션을 넘긴 offset 재개의 누락/중복을 방지하는 목적이다(값이 동일한 행끼리의 내부 순서가 뒤바뀌는 것은 무해하므로 감수).
 
 ---
 
@@ -218,7 +231,7 @@ DB/테이블/컬럼 목록은 `total`(COUNT 결과)이 정해진 뒤에만 순�
 | 함수 | 시그니처 | 용도 |
 |------|----------|------|
 | `_build_session` | `(cookies, auth_headers, proxies=None) -> requests.Session` | `verify=False` + 쿠키/인증 헤더/프록시 영구 부착 |
-| `fingerprint` | `(ctx, progress_cb=None) -> ExtractCtx` | 컨텍스트·DBMS·UNION visible 자동 탐지 + 기법별 smoke test. 추출 불가 시 `UnsupportedTechniqueError` |
+| `fingerprint` | `(ctx, progress_cb=None) -> ExtractCtx` | 컨텍스트·DBMS·UNION visible 자동 탐지 + 기법별 smoke test. 추출 불가 시 `UnsupportedTechniqueError`. boolean 기법에서 `WAFBlockedError`/컨텍스트 탐지 실패 시 `ctx.use_like=True`로 전환해 1회 재시도(LIKE 폴백, 서버 콘솔 로그만 기록) |
 | `extract_dbms_info` | `(ctx, progress_cb=None) -> dict` | `{version, user, current_db}` 추출. 모든 값이 빈 문자열이면 `UnsupportedTechniqueError` raise (추출 불가 안전망) |
 | `count_databases` | `(ctx) -> Optional[int]` | DB(스키마) 총 개수. `list_databases` 호출 전 `total`로 전달 (SQLite는 쿼리 없이 1 고정) |
 | `count_db_tables` | `(ctx, db) -> Optional[int]` | DB 내 테이블 총 개수. `list_tables`의 `total`로 전달 |
@@ -229,7 +242,7 @@ DB/테이블/컬럼 목록은 `total`(COUNT 결과)이 정해진 뒤에만 순�
 | `count_table` | `(ctx, db, table) -> Optional[int]` | 테이블 전체 행 수 추출 (estimate/dump 공용) |
 | `count_search` | `(ctx, target, match, keyword) -> Optional[int]` | 특수 검색모드 결과 총 개수. `target`="database"/"table"/"column", `match`="contains"/"exact". MSSQL의 table/column은 `sys.databases` 전체를 순회해 합산(비용 큼) |
 | `search` | `(ctx, target, match, keyword, total=None, items_out=None, progress_cb=None) -> list[str]` | DB명/테이블명/컬럼명 검색 — 위치 목록(raw 문자열, `DUMP_DELIM` 결합)을 반환. target="database"→DB명 그대로, "table"→`db{DELIM}table`, "column"→`db{DELIM}table{DELIM}column`. 기법·주입 컨텍스트·커스텀 페이로드는 세션 시작 시 확정된 `ctx` 값을 그대로 사용(재선택 없음). SQLite database 검색은 `["main"]` 고정 매칭, MSSQL table/column은 `_search_mssql_multidb`로 전체 DB 순회 |
-| `dump_table` | `(ctx, db, table, columns, total=None, progress_cb=None, rows_out=None) -> list[list[str]]` | 처음~끝 전체 행 추출. `total` 전달 시 COUNT 생략. `rows_out` 전달 시 해당 리스트에 행을 append (취소 시 누적 행 보존). 취소 시 `InterruptedError` 전파. `qDLMTRq` 구분자 split |
+| `dump_table` | `(ctx, db, table, columns, total=None, progress_cb=None, rows_out=None) -> list[list[str]]` | 처음~끝 전체 행 추출. `total` 전달 시 COUNT 생략(호출부가 `totals["rows"]` 캐시를 우선 재사용). `rows_out` 전달 시 해당 리스트에 행을 append (취소 시 누적 행 보존). 취소 시 `InterruptedError` 전파. `qDLMTRq` 구분자 split. 페이지네이션 `ORDER BY`는 선택 컬럼들을 결합한 `row_select` 표현식 자체를 재사용(세션을 넘긴 offset 재개 안정화 — 상세는 위 totals 문단 참고) |
 | `save_to_excel` | `(extracted, target_url, output_dir, excel_name=None, file_prefix="extract") -> list[str]` | 마스터 파일(`{file_prefix}_<name>_DBfingerprint.xlsx` — INFO+DBList[+SearchResult]) + DB별 파일(`{file_prefix}_<name>_<db>.xlsx` — INFO+_TableMap+테이블 시트) 생성. 동일 이름이면 항상 덮어쓰기. `extracted["search"]`가 있으면 마스터 파일에 SearchResult 시트(검색대상/매칭방식/키워드/위치) 추가. `file_prefix`로 특수 검색모드 결과를 일반 추출 파일과 격리 저장 |
 | `init_extracted` | `(ctx) -> dict` | 누적 dict 표준 초기화 |
 | `find_existing_extract` | `(excel_name, output_dir) -> dict \| None` | 해당 이름의 마스터 파일 존재 여부 확인 + 요약 반환 (`{dbms, technique, context, position, blind_template, union_*, db_count}`) |
@@ -245,11 +258,11 @@ DB/테이블/컬럼 목록은 한 번에 가져오지 않고 행 단위 페이�
 
 | 추출 대상 | 기본 패턴 (1개씩) | UNION 묶음 패턴 (N개씩) |
 |-----------|-------------------|------------------------|
-| Database 목록 | `LIMIT 1 OFFSET n` / `OFFSET n FETCH 1` | `_q_base_databases` → `_q_batch_list` → `GROUP_CONCAT`/`STRING_AGG`/`LISTAGG` + `ROW_DELIM` split |
+| Database 목록 | `ORDER BY schema_name LIMIT 1 OFFSET n` / `ORDER BY name OFFSET n FETCH 1` | `_q_base_databases` → `_q_batch_list` → `GROUP_CONCAT`/`STRING_AGG`/`LISTAGG` + `ROW_DELIM` split |
 | Table 목록 | `WHERE TABLE_SCHEMA=db ORDER BY TABLE_NAME LIMIT 1 OFFSET n` | 동일 방식 (`_q_base_tables` 기반) |
 | Column 목록 | `ORDER BY ORDINAL_POSITION LIMIT 1 OFFSET n` | 동일 방식 (`_q_base_columns` 기반) |
-| Row dump (1행씩) | `SELECT col1\|\|DELIM\|\|col2 FROM tbl LIMIT 1 OFFSET n` (NULL-safe + `qDLMTRq`) | — |
-| Row dump (UNION 묶음) | — | DBMS 집계 함수로 N행을 `ROW_DELIM`(`qROWMTRq`)으로 결합 후 추출(`use_hex`에 따라 HEX 디코드 또는 raw) |
+| Row dump (1행씩) | `SELECT col1\|\|DELIM\|\|col2 FROM tbl ORDER BY col1\|\|DELIM\|\|col2 LIMIT 1 OFFSET n` (NULL-safe + `qDLMTRq`, `ORDER BY`는 SELECT와 동일한 row_select 표현식 재사용) | — |
+| Row dump (UNION 묶음) | — | DBMS 집계 함수로 N행을 `ROW_DELIM`(`qROWMTRq`)으로 결합 후 추출(`use_hex`에 따라 HEX 디코드 또는 raw). 내부 페이지네이션 서브쿼리도 1행씩 경로와 동일한 `ORDER BY row_select` 적용 |
 
 DBMS별 차이:
 - **MySQL/MariaDB**: `LIMIT offset,1`
@@ -257,6 +270,8 @@ DBMS별 차이:
 - **PostgreSQL**: `LIMIT 1 OFFSET n` + `string_agg`
 - **Oracle**: `ROW_NUMBER() OVER` 서브쿼리 또는 `OFFSET n ROWS FETCH NEXT 1 ROWS ONLY`
 - **SQLite**: `LIMIT 1 OFFSET n` (`databases` 추출은 `["main"]` 고정)
+
+모든 레벨(Database/Table/Column/Row)의 1개씩 경로(`_q_row_*`)는 같은 레벨의 UNION 묶음 배치 경로(`_q_base_*`/`_q_row_dump_batch`)와 **동일한 `ORDER BY` 기준**을 사용한다 — 엑셀 재사용 로드처럼 **다른 세션에서 offset을 이어받을 때** DBMS가 실행마다 임의 순서로 반환해 항목이 누락/중복되는 것을 방지하기 위함이며, "삽입 순서 보존"이 목적이 아니다. Row dump는 안정적 PK가 항상 보장되지 않아 선택 컬럼 결합 표현식(`row_select`) 자체를 정렬 키로 쓴다 — 값이 동일한 행끼리의 상대 순서가 바뀌는 것은 내보내는 데이터가 동일하므로 무해하다. 단, 같은 테이블을 **다른 컬럼 구성**으로 두 번 이상 나눠 dump하는 경우(§검색모드 컬럼 병합 참고)는 각 컬럼 구성마다 정렬 키가 달라 행 정렬이 보장되지 않는 기존 트레이드오프가 그대로 유지된다.
 
 `dump_table` 컬럼 구분자는 응답 본문 중간 컬럼이 `DUMP_DELIM`(=`qDLMTRq`)을 자연 포함할 가능성이 매우 낮은 q-prefix 마커를 사용한다.
 
@@ -284,6 +299,7 @@ DB명 / 테이블명 / 컬럼명이 키워드를 **포함**(`contains`)하거나
 ### WAF 검출 (`_send` 인라인)
 - **status code**: 403 / 406 / 419 / 429 / 503 — `success_marker` 유무와 무관하게 항상 판정
 - **body 키워드**: `access denied` / `blocked` / `forbidden` — baseline에 자연 발생한 키워드는 `ctx.waf_baseline_kws`에 등록되어 오탐 마스킹. 단, `_union_extract`·`_error_extract`가 전달한 `success_marker`가 응답에 반사된 경우(= 실제 데이터 응답) body 키워드 판정을 스킵하여 추출값에 WAF 키워드가 포함돼도 오탐 중단하지 않음
+- **WAF 차단 리다이렉트**(`WAF_REDIRECT_DOMAINS`, 예: `kuipernet.com`): HTTP 3xx 리다이렉트 체인(중간 hop 포함) 또는 응답 본문(meta refresh / JS location)에 해당 도메인이 나타나면 판정. 그 외 낯선 외부 도메인으로의 리다이렉트는 기존대로 `ValueError`(유출 차단)로 구분 처리
 - 검출 시 `WAFBlockedError` raise → 호출부가 안전 종료 + 누적 데이터 엑셀 저장
 
 ### 자동 감속 (429 / 503)
@@ -296,7 +312,7 @@ DB명 / 테이블명 / 컬럼명이 키워드를 **포함**(`contains`)하거나
 ### 도메인 경계 (3중)
 1. **ExtractCtx 생성 시** — `allowed_netloc = urlparse(target_url).netloc` 1회 저장
 2. **`_send` 사전 검증** — 요청 URL의 netloc이 `ctx.allowed_netloc`과 다르면 즉시 차단
-3. **`_send` 사후 검증** — 리다이렉트 후 최종 URL의 netloc이 다르면 응답 폐기 (세션 쿠키 유출 방지)
+3. **`_send` 사후 검증** — 리다이렉트 후 최종 URL의 netloc이 다르면 응답 폐기 (세션 쿠키 유출 방지). 단 리다이렉트 목적지가 `WAF_REDIRECT_DOMAINS`에 해당하면 유출 차단이 아닌 WAF 검출(`WAFBlockedError`)로 분류
 
 ### 인증 헤더
 `auth_headers`(예: `{"Authorization": "Bearer xxx", "X-API-Key": "..."}`)는 `_build_session`에서 `Session.headers`에 등록되어 fingerprint·메타 쿼리·dump 모든 요청에 자동 부착.
@@ -321,7 +337,7 @@ DB명 / 테이블명 / 컬럼명이 키워드를 **포함**(`contains`)하거나
 | | DBList | DB 목록 (1행=헤더 "DB명", 2행~=DB이름) |
 | | SearchResult | `extracted["search"]`가 있을 때만 추가 — 검색대상/매칭방식/키워드/위치(`hit.display`) |
 | `{file_prefix}_<name>_<db>.xlsx` | INFO | 메타 + Total Tables(해당 DB의 테이블 총개수, 복원용) |
-| | _TableMap | 시트명 ↔ 원본 테이블명 ↔ 총 컬럼수 매핑 (복원 시 정확성 + 이어받기 판정 보장) |
+| | _TableMap | 시트명 ↔ 원본 테이블명 ↔ 총 컬럼수 ↔ 총 행수 매핑 (복원 시 정확성 + 이어받기 판정 보장). 총 행수 컬럼은 구버전(3컬럼) 파일과 호환 — 없으면 `totals["rows"]`에 해당 키가 생기지 않아 "N행 추출됨" 폴백 표시로 구분 |
 | | 테이블별 | 1행=컬럼 헤더, 2행~=행 데이터 |
 
 `file_prefix` 기본값은 `"extract"`. 특수 검색모드는 `"search(<target>-<keyword>)"`를 사용해 파일명 자체로 일반 추출과 구분되며(예: `search(column-passw)_shop_DBfingerprint.xlsx`), 드릴다운 추출 결과도 검색 히트 위치부터 이어서 같은 `{file_prefix}_<name>_<db>.xlsx` 규칙으로 저장된다.
@@ -346,8 +362,8 @@ Union 관련 행 3개, Total Databases(마스터 파일 전용) / Total Tables(D
 ### 이전 결과 복원 (`load_from_excel`)
 1. 마스터 파일 INFO → ctx 핵심값 (dbms / technique / context / position / blind_template / union 정보) 복원 → fingerprint **자동탐지만 생략** (비싼 컨텍스트 7종 × DBMS probe 건너뜀). 같은 INFO의 Total Databases → `extracted["totals"]["databases"]`
 2. 마스터 파일 DBList → `extracted["databases"]`
-3. DB별 파일 INFO의 Total Tables → `extracted["totals"]["tables"][db]`. `_TableMap` → 원본 테이블명 복원 + 3번째 컬럼(총 컬럼수) → `extracted["totals"]["columns"]["db.tbl"]`. 각 시트 헤더 → `columns`, 데이터 → `dumps` (저장된 만큼만)
-4. 리스트(databases/tables/columns)는 복원된 `totals`와 현재 길이를 비교해 부분 추출 여부를 판정 — 호출부가 액션 재호출 시 `items_out`으로 이어서 추출한다. 행 dump는 기존과 동일하게 `rows` 길이를 offset으로 이어받는다(별도 total 저장 없음)
+3. DB별 파일 INFO의 Total Tables → `extracted["totals"]["tables"][db]`. `_TableMap` → 원본 테이블명 복원 + 3번째 컬럼(총 컬럼수) → `extracted["totals"]["columns"]["db.tbl"]` + 4번째 컬럼(총 행수) → `extracted["totals"]["rows"]["db.tbl"]`. 각 시트 헤더 → `columns`, 데이터 → `dumps` (저장된 만큼만)
+4. 리스트(databases/tables/columns)는 복원된 `totals`와 현재 길이를 비교해 부분 추출 여부를 판정 — 호출부가 액션 재호출 시 `items_out`으로 이어서 추출한다. 행 dump는 `rows` 길이를 offset으로 이어받으며, 복원된 `totals["rows"]["db.tbl"]`이 있으면 estimate 단계에서 COUNT 재조회 없이 재사용한다
 
 ---
 

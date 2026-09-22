@@ -47,6 +47,21 @@
     {"path": "/se2/css/",                                                              "severity": "LOW",    "category": "default_resource"},
     {"path": "/se2/plugin/",                                                           "severity": "LOW",    "category": "default_resource"},
     {"path": "/editor/SmartEditor2/photo_uploader/",                                   "severity": "MEDIUM", "category": "api_endpoint"},
-    {"path": "/board/SmartEditor2/photo_uploader/",                                    "severity": "MEDIUM", "category": "api_endpoint"}
+    {"path": "/board/SmartEditor2/photo_uploader/",                                    "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/common/SmartEditor2/",                                                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/common/SmartEditor2/photo_uploader/",                                   "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/resources/SmartEditor2/",                                               "severity": "LOW",    "category": "default_resource"},
+    {"path": "/js/SmartEditor2/",                                                      "severity": "LOW",    "category": "default_resource"},
+    {"path": "/bbs/SmartEditor2/",                                                     "severity": "LOW",    "category": "default_resource"},
+    {"path": "/bbs/SmartEditor2/photo_uploader/",                                      "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/include/SmartEditor2/",                                                 "severity": "LOW",    "category": "default_resource"},
+    {"path": "/inc/SmartEditor2/",                                                     "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/SmartEditor2/photo_uploader/popup/js/HuskyEZCreator.js",                "severity": "LOW",    "category": "default_resource"},
+    {"path": "/SmartEditor2/photo_uploader/popup/file_uploader.ashx",                  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/SmartEditor2/photo_uploader/popup/file_uploader.php5",                  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/se2/photo_uploader/",                                                   "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/se2/photo_uploader/popup/",                                             "severity": "MEDIUM", "category": "api_endpoint"}
   ]
 }

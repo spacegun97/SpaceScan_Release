@@ -24,13 +24,17 @@ def build_module_extra(key: str,
                        render: bool = False,
                        stop_event: Optional["threading.Event"] = None,
                        backend_filter: bool = True,
-                       backends: Optional[List[str]] = None
+                       backends: Optional[List[str]] = None,
+                       flag_auth_blocked: bool = True,
+                       crawl_cache: Optional[Dict[str, Any]] = None
                        ) -> Dict[str, Any]:
     """모듈 키별로 scan()에 전달할 추가 파라미터 dict를 구성한다.
 
     - default_pages: stacks (사전 탐지 결과), backend_filter (백엔드 확장자 필터 토글),
-      backends (사용자가 직접 선택한 백엔드 언어 패밀리 — 필터 허용셋에 합산)
-    - directory_listing / sql_injection / path_traversal: max_pages, render (크롤링 한계·렌더 옵션)
+      backends (사용자가 직접 선택한 백엔드 언어 패밀리 — 필터 허용셋에 합산),
+      flag_auth_blocked (401/403 응답을 취약점으로 표시할지 여부 토글)
+    - directory_listing / sql_injection / path_traversal: max_pages, render (크롤링 한계·렌더 옵션),
+      crawl_cache (같은 스캔 잡 내 크롤 결과 공유 — 동일 target·설정으로 중복 크롤 방지)
     - 위 4개 모듈: progress_cb (하위 진행률 콜백)
     - 전체 모듈: stop_event ([중단] 시 요청 루프 즉시 탈출용)
     """
@@ -40,10 +44,12 @@ def build_module_extra(key: str,
             extra["stacks"] = stacks
         extra["backend_filter"] = backend_filter
         extra["backends"] = backends or []
+        extra["flag_auth_blocked"] = flag_auth_blocked
     if key in ("directory_listing", "sql_injection", "path_traversal"):
         if max_pages is not None:
             extra["max_pages"] = max_pages
         extra["render"] = render   # render=False도 명시 전달 (기본값 덮어쓰기 방지)
+        extra["crawl_cache"] = crawl_cache
     if key in MODULES_WITH_PROGRESS_CB and progress_cb is not None:
         extra["progress_cb"] = progress_cb
     # stop_event는 4개 스캔 모듈 모두 scan() 시그니처에서 수신한다

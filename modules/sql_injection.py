@@ -4,14 +4,13 @@ Error-based + Boolean-based 두 가지 기법으로 GET/POST 입력 포인트를
 OWASP Top 10 A03:2021 — Injection
 """
 import re
-import time
 import requests
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 from typing import Dict, Any, List, Set, Tuple, Optional, Callable
 
 from . import _crawl
-from ._cancel import wait_or_cancel
+from ._cancel import wait_or_cancel, run_cancellable
 from ._sqli_util import (
     WAF_KEYWORDS, DBMS_ERROR_VECTORS, DB_ERROR_SIGNATURES,
     parse_input_points, similarity, gen_marker, build_dynamic_contexts,
@@ -59,7 +58,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
          auth_headers: Optional[Dict[str, str]] = None,
-         render: bool = False, stop_event=None) -> Dict[str, Any]:
+         render: bool = False, stop_event=None,
+         crawl_cache: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "module":       "SQL Injection",
         "target":       target_url,
@@ -74,16 +74,28 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     base_netloc = urlparse(target_url).netloc
 
     # Phase 1: BFS 크롤링 (진행률 0~40% 구간에 매핑)
-    crawl_cb = None
-    if progress_cb:
-        def crawl_cb(cur, total):
-            progress_cb(int(cur / total * 40) if total else 0, 100)
-    pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages, cookies,
-                         progress_cb=crawl_cb, proxies=proxies,
-                         auth_headers=auth_headers, render=render,
-                         stop_event=stop_event)
-    debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
-                         "sql_injection", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
+    # crawl_cache에 이미 결과가 있으면(같은 스캔 잡의 다른 모듈이 동일 target·설정으로
+    # 먼저 크롤을 마쳤으면) 재사용해 중복 크롤(타깃 서버 중복 요청)을 피한다.
+    cache_hit = crawl_cache is not None and "pages" in crawl_cache
+    if cache_hit:
+        pages = crawl_cache["pages"]
+        debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
+                             "sql_injection",
+                             f"BFS 크롤링 재사용: {len(pages)}개 페이지 (중복 요청 생략)"))
+        # Phase 2.5 직후 progress_cb(40, 100)가 항상 호출되므로 여기서 별도 보고는 생략
+    else:
+        crawl_cb = None
+        if progress_cb:
+            def crawl_cb(cur, total):
+                progress_cb(int(cur / total * 40) if total else 0, 100)
+        pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages, cookies,
+                             progress_cb=crawl_cb, proxies=proxies,
+                             auth_headers=auth_headers, render=render,
+                             stop_event=stop_event, debug_sink=debug_events)
+        debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
+                             "sql_injection", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
+        if crawl_cache is not None:
+            crawl_cache["pages"] = pages
 
     # Phase 2: 크롤링 결과에서 입력 포인트 수집 (빠른 작업, 40% 지점 고정)
     seen_points: Set[Tuple] = set()
@@ -102,7 +114,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
         # body가 있으면 kind에 따라 입력 포인트 파싱, 없으면 path 주입 포인트만 수집
         if page.get("body"):
             points = parse_input_points(
-                page["url"], page["body"], base_netloc, kind=page.get("kind", "html")
+                page["url"], page["body"], base_netloc, kind=page.get("kind", "html"),
+                debug_sink=debug_events
             )
         else:
             points = []
@@ -180,7 +193,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
                          "sql_injection", f"스캔 완료: {len(all_findings)}개 취약점"))
     result["findings"]     = all_findings
-    result["crawl_events"] = [(p["visited_at"], p["url"]) for p in pages]
+    # 캐시 재사용 시에는 이미 기록된 크롤 로그이므로 중복 출력하지 않는다
+    result["crawl_events"] = [] if cache_hit else [(p["visited_at"], p["url"]) for p in pages]
     return result
 
 
@@ -214,7 +228,7 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
     try:
         wait_or_cancel(stop_event, delay)
         resp = _inject_and_request(session, point, first_param, "'",
-                                   timeout, base_netloc)
+                                   timeout, base_netloc, stop_event=stop_event)
     except Exception:
         return findings, vulnerable_params
 
@@ -241,7 +255,7 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
             try:
                 wait_or_cancel(stop_event, delay)
                 resp = _inject_and_request(session, point, param, payload,
-                                           timeout, base_netloc)
+                                           timeout, base_netloc, stop_event=stop_event)
             except Exception:
                 continue
 
@@ -266,7 +280,7 @@ def _scan_error_based(point: Dict, timeout: int, delay: float,
                 try:
                     wait_or_cancel(stop_event, delay)
                     resp = _inject_and_request(session, point, param, payload,
-                                               timeout, base_netloc)
+                                               timeout, base_netloc, stop_event=stop_event)
                 except Exception:
                     continue
 
@@ -318,9 +332,9 @@ def _scan_boolean_based(point: Dict, timeout: int, delay: float,
     # Step 1: 원본 요청 2회 → 동적 콘텐츠 context 추출 + 자연 변동폭 측정
     try:
         wait_or_cancel(stop_event, delay)
-        resp1 = _baseline_request(session, point, timeout, base_netloc)
+        resp1 = _baseline_request(session, point, timeout, base_netloc, stop_event=stop_event)
         wait_or_cancel(stop_event, delay)
-        resp2 = _baseline_request(session, point, timeout, base_netloc)
+        resp2 = _baseline_request(session, point, timeout, base_netloc, stop_event=stop_event)
     except Exception:
         return findings
 
@@ -342,10 +356,10 @@ def _scan_boolean_based(point: Dict, timeout: int, delay: float,
             try:
                 wait_or_cancel(stop_event, delay)
                 true_resp = _inject_and_request(session, point, param, true_payload,
-                                                timeout, base_netloc)
+                                                timeout, base_netloc, stop_event=stop_event)
                 wait_or_cancel(stop_event, delay)
                 false_resp = _inject_and_request(session, point, param, false_payload,
-                                                 timeout, base_netloc)
+                                                 timeout, base_netloc, stop_event=stop_event)
             except Exception:
                 continue
 
@@ -385,7 +399,7 @@ def _scan_boolean_based(point: Dict, timeout: int, delay: float,
 def _request(session: requests.Session, method: str, url: str,
              params: Dict[str, str], timeout: int,
              base_netloc: str,
-             body_type: str = "form") -> requests.Response:
+             body_type: str = "form", stop_event=None) -> requests.Response:
     """method에 따라 GET 또는 POST 요청을 전송한다.
 
     base_netloc이 지정된 경우 요청 전·후 2중 검증으로 외부 도메인 유출을 차단한다.
@@ -397,23 +411,27 @@ def _request(session: requests.Session, method: str, url: str,
     - "form" (기본): application/x-www-form-urlencoded
     - "json": application/json — requests의 json kwarg가 자동 직렬화 + 헤더 설정
     - "xml":  application/xml — params를 평면 XML 트리로 조립 후 전송
+
+    실제 전송(session.get/post)은 run_cancellable을 통해 데몬 워커에서 실행된다 —
+    응답 대기 중에도 [중단]이 즉시 반응한다(stop_event=None이면 오버헤드 없이 동기 호출).
     """
     # 사전 검증 — 외부 도메인으로 payload 전송 차단 (최종 방어선)
     if base_netloc and not _crawl._same_site(urlparse(url).netloc, base_netloc):
         raise ValueError(f"request to external domain blocked: {urlparse(url).netloc}")
 
-    if method == "POST":
-        if body_type == "json":
-            resp = session.post(url, json=params, timeout=timeout, allow_redirects=True)
-        elif body_type == "xml":
-            body = _dict_to_xml(params)
-            headers = {"Content-Type": "application/xml"}
-            resp = session.post(url, data=body, headers=headers,
-                                timeout=timeout, allow_redirects=True)
-        else:
-            resp = session.post(url, data=params, timeout=timeout, allow_redirects=True)
-    else:
-        resp = session.get(url, params=params, timeout=timeout, allow_redirects=True)
+    def _send() -> requests.Response:
+        if method == "POST":
+            if body_type == "json":
+                return session.post(url, json=params, timeout=timeout, allow_redirects=True)
+            if body_type == "xml":
+                body = _dict_to_xml(params)
+                headers = {"Content-Type": "application/xml"}
+                return session.post(url, data=body, headers=headers,
+                                    timeout=timeout, allow_redirects=True)
+            return session.post(url, data=params, timeout=timeout, allow_redirects=True)
+        return session.get(url, params=params, timeout=timeout, allow_redirects=True)
+
+    resp = run_cancellable(_send, stop_event)
     # 사후 검증 — 리다이렉트로 외부 도메인으로 이탈 시 세션 쿠키 유출 방지
     if base_netloc and not _crawl._same_site(urlparse(resp.url).netloc, base_netloc):
         raise ValueError(f"redirect to external domain: {urlparse(resp.url).netloc}")
@@ -558,7 +576,7 @@ def _dict_to_xml(params: Dict[str, str]) -> str:
 
 def _baseline_request(session: requests.Session, point: Dict[str, Any],
                       timeout: int,
-                      base_netloc: str) -> requests.Response:
+                      base_netloc: str, stop_event=None) -> requests.Response:
     """point의 원본(페이로드 없음) 요청을 전송한다.
 
     path injection point는 URL 그대로 사용하고 params는 생략한다.
@@ -570,9 +588,10 @@ def _baseline_request(session: requests.Session, point: Dict[str, Any],
     param_types = point.get("param_types", {})
 
     if any(t == "path" for t in param_types.values()):
-        return _request(session, method, url, {}, timeout, base_netloc, body_type)
+        return _request(session, method, url, {}, timeout, base_netloc, body_type,
+                        stop_event=stop_event)
     return _request(session, method, url, point["params"],
-                    timeout, base_netloc, body_type)
+                    timeout, base_netloc, body_type, stop_event=stop_event)
 
 
 def _capture_waf_baseline(session: requests.Session, point: Dict[str, Any],
@@ -587,7 +606,7 @@ def _capture_waf_baseline(session: requests.Session, point: Dict[str, Any],
     """
     try:
         wait_or_cancel(stop_event, delay)
-        resp = _baseline_request(session, point, timeout, base_netloc)
+        resp = _baseline_request(session, point, timeout, base_netloc, stop_event=stop_event)
     except Exception:
         return []
     body_lower = resp.text.lower()
@@ -598,7 +617,7 @@ def _inject_and_request(session: requests.Session, point: Dict[str, Any],
                         param: str, payload: str,
                         timeout: int,
                         base_netloc: str,
-                        where: str = "append") -> requests.Response:
+                        where: str = "append", stop_event=None) -> requests.Response:
     """point의 특정 param에 payload를 주입하여 요청을 전송한다.
 
     where 모드:
@@ -623,12 +642,14 @@ def _inject_and_request(session: requests.Session, point: Dict[str, Any],
     if param_types.get(param) == "path":
         # URL path 세그먼트 치환 — 쿼리 파라미터는 보내지 않음
         test_url = _build_path_url(url, param, test_value)
-        return _request(session, method, test_url, {}, timeout, base_netloc, body_type)
+        return _request(session, method, test_url, {}, timeout, base_netloc, body_type,
+                        stop_event=stop_event)
 
     # 일반 form / json / xml — 해당 param 값만 치환
     test_params = dict(point["params"])
     test_params[param] = test_value
-    return _request(session, method, url, test_params, timeout, base_netloc, body_type)
+    return _request(session, method, url, test_params, timeout, base_netloc, body_type,
+                    stop_event=stop_event)
 
 
 # ── Inline Query 스캔 ────────────────────────────────────────────────────────
@@ -660,7 +681,7 @@ def _scan_inline_query(point: Dict, timeout: int, delay: float,
                 wait_or_cancel(stop_event, delay)
                 resp = _inject_and_request(
                     session, point, param, payload,
-                    timeout, base_netloc, where="replace",
+                    timeout, base_netloc, where="replace", stop_event=stop_event,
                 )
             except Exception:
                 continue

@@ -3,6 +3,7 @@ BFS 웹 크롤러 공통 유틸
 directory_listing, sql_injection, path_traversal 모듈이 공유한다.
 """
 import json as _json
+import threading
 import time
 import re
 import requests
@@ -11,7 +12,7 @@ from datetime import datetime
 from html import unescape as _html_unescape
 from urllib.parse import urlparse, urljoin, urldefrag, parse_qs
 from typing import List, Dict, Any, Callable, Optional, Tuple
-from ._cancel import wait_or_cancel
+from ._cancel import wait_or_cancel, run_cancellable, ScanCancelled
 
 # 로그아웃 경로 패턴 — 세션 파기 방지를 위해 큐 추가 단계에서 제외
 # path의 마지막 segment가 logout/log-out/signout/sign-out과 정확히 일치하는 경우만 매칭
@@ -119,19 +120,29 @@ def _fetch_sitemap_urls(
     cookies: Optional[Dict[str, str]],
     proxies: Optional[Dict[str, str]],
     headers: Dict[str, str],
+    delay: float = 0.7,
+    stop_event: Optional["threading.Event"] = None,
     _depth: int = 0,
 ) -> List[str]:
     """sitemap URL에서 같은 도메인 페이지 URL을 재귀 수집한다 (C8).
 
     <sitemapindex> 구조를 만나면 자식 sitemap을 재귀 조회한다.
     재귀 깊이 상한 3, 자식 sitemap 최대 20개.
+    C-R: 재귀 호출을 포함해 요청 직전마다 delay를 적용해 서버 부하를 제한하고,
+    stop_event가 set되면 ScanCancelled로 즉시 중단한다(BFS 본 루프와 동일 정책).
     """
     if _depth > 2:
         return []
     result: List[str] = []
     try:
-        resp = requests.get(url, timeout=timeout, verify=False, allow_redirects=True,
-                            cookies=cookies, proxies=proxies, headers=headers)
+        wait_or_cancel(stop_event, delay)  # 속도 조절 딜레이 (+ [중단] 검사)
+        # 요청 자체는 데몬 워커에서 실행 — 전송 후 응답 대기 중에도 [중단]이 즉시 반응한다.
+        # stop 시 워커는 버려두고(요청 1건은 스스로 자연 종료) 호출 스레드만 즉시 탈출한다.
+        resp = run_cancellable(
+            lambda: requests.get(url, timeout=timeout, verify=False, allow_redirects=True,
+                                 cookies=cookies, proxies=proxies, headers=headers),
+            stop_event,
+        )
         if resp.status_code != 200:
             return result
         text = resp.text
@@ -145,7 +156,8 @@ def _fetch_sitemap_urls(
             for child_url in child_locs[:20]:
                 result.extend(
                     _fetch_sitemap_urls(child_url.strip(), base_netloc, timeout,
-                                        cookies, proxies, headers, _depth + 1)
+                                        cookies, proxies, headers, delay, stop_event,
+                                        _depth + 1)
                 )
             return result
 
@@ -165,12 +177,15 @@ def _seed_from_robots_sitemap(
     cookies: Optional[Dict[str, str]],
     proxies: Optional[Dict[str, str]],
     auth_headers: Optional[Dict[str, str]],
+    delay: float = 0.7,
+    stop_event: Optional["threading.Event"] = None,
 ) -> List[str]:
     """robots.txt와 sitemap.xml에서 같은 도메인 URL을 수집해 시드 목록으로 반환한다.
 
     robots.txt의 Disallow/Allow 라인은 발견 힌트로 사용하며 차단 규칙을 따르지 않는다.
     sitemap.xml은 _fetch_sitemap_urls로 중첩 sitemap index까지 재귀 전개한다 (C8).
     수집된 URL은 base_netloc 기준 동일 도메인 여부와 로그아웃 경로 필터를 통과해야 한다.
+    C-R: robots.txt 요청도 BFS 본 루프와 동일하게 delay를 적용하고 stop_event로 중단 가능하게 한다.
     """
     seeds: List[str] = []
     origin = f"{scheme}://{base_netloc}"
@@ -178,9 +193,14 @@ def _seed_from_robots_sitemap(
 
     # robots.txt 처리
     try:
-        resp = requests.get(origin + "/robots.txt", timeout=timeout,
-                            verify=False, allow_redirects=True,
-                            cookies=cookies, proxies=proxies, headers=headers)
+        wait_or_cancel(stop_event, delay)  # 속도 조절 딜레이 (+ [중단] 검사)
+        # 요청 자체는 데몬 워커에서 실행 — 전송 후 응답 대기 중에도 [중단]이 즉시 반응한다.
+        resp = run_cancellable(
+            lambda: requests.get(origin + "/robots.txt", timeout=timeout,
+                                 verify=False, allow_redirects=True,
+                                 cookies=cookies, proxies=proxies, headers=headers),
+            stop_event,
+        )
         if resp.status_code == 200:
             for m in re.finditer(
                 r'^(?:Disallow|Allow|Sitemap)\s*:\s*(\S+)',
@@ -195,7 +215,7 @@ def _seed_from_robots_sitemap(
                 if m.group(0).lstrip().lower().startswith("sitemap"):
                     seeds.extend(
                         _fetch_sitemap_urls(abs_url, base_netloc, timeout,
-                                            cookies, proxies, headers)
+                                            cookies, proxies, headers, delay, stop_event)
                     )
                 elif (_same_site(parsed.netloc, base_netloc)
                       and not _is_logout_path(parsed.path)):
@@ -206,7 +226,7 @@ def _seed_from_robots_sitemap(
     # sitemap.xml 처리 — 재귀 전개
     seeds.extend(
         _fetch_sitemap_urls(origin + "/sitemap.xml", base_netloc, timeout,
-                            cookies, proxies, headers)
+                            cookies, proxies, headers, delay, stop_event)
     )
 
     return seeds
@@ -246,12 +266,19 @@ def _extract_urls_from_json(body: str, base_url: str, base_netloc: str) -> List[
 
 
 def _extract_links_from_body(body: str, final_url: str,
-                              base_netloc: str, kind: str) -> List[str]:
+                              base_netloc: str, kind: str,
+                              debug_sink: Optional[List[Tuple[str, str, str]]] = None) -> List[str]:
     """HTML 또는 스크립트 본문에서 같은 도메인 링크를 추출한다.
 
     P4: HTML 엔티티 디코드(_html_unescape) 후 urljoin.
     C5: data-url/href/action/src, srcset, <base href>, <meta refresh>, 따옴표 없는 href 추가.
     C6: html 종류에서도 <script> 블록·on* 핸들러의 JS 링크 패턴으로 큐 확장.
+    C13: 위 정규식(_JS_LINK_PATTERNS)이 놓치는 동적 조립 URL(변수 결합·axios baseURL
+         인스턴스·N-hop 파라미터 전파 등)을 esprima/tree-sitter AST 기반(js_analysis
+         재사용, _endpoint_extract 경유)으로 보강한다. 정규식 결과와 병합(union)만
+         하며 대체하지 않는다 — AST 파싱 실패(TS/JSX 등)·백엔드 미설치 시 조용히
+         빈 리스트로 폴백한다. debug_sink가 주어지면 게이트 드롭 사유를 append한다
+         (기존 debug_events/crawl_path.log 관례 — 경로 미탐 트러블슈팅용).
     """
     links: List[str] = []
 
@@ -370,17 +397,36 @@ def _extract_links_from_body(body: str, final_url: str,
         for url in _extract_urls_from_json(body, base_url, base_netloc):
             links.append(url)
 
+    # C13: AST 기반 엔드포인트 탐지로 보강 (html/script만 대상 — json은 URL 재귀
+    # 추출로 이미 커버됨). _endpoint_extract가 게이트(동일 도메인/로그아웃/플레이스홀더)
+    # 까지 마친 절대 URL만 돌려주므로 여기서는 그대로 이어붙이기만 한다.
+    if kind in ("html", "script"):
+        from . import _endpoint_extract  # 순환 import 회피 — 함수 내부 지연 import
+        links.extend(_endpoint_extract.discover_crawl_links(
+            body, base_url, base_netloc, kind, debug_sink=debug_sink))
+
     return links
 
 
 def _make_route_handler(base_netloc: str,
                         xhr_points: List[Dict],
-                        xhr_visited: set):
+                        xhr_visited: set,
+                        delay: float = 0.7,
+                        stop_event: Optional["threading.Event"] = None,
+                        activity: Optional[Dict[str, float]] = None):
     """Playwright 라우트 훅을 반환한다.
 
     C2 강제: 비-GET 요청은 전송 차단(abort). GET 로그아웃 경로도 abort(세션 보호).
     네트워크 인터셉션: 같은 netloc의 GET(쿼리 파라미터)·POST(바디) 요청을
     입력 포인트 dict로 기록한다. PUT/PATCH/DELETE 등은 abort만 하고 기록 제외.
+
+    C-R: 같은 도메인(base_netloc)으로 실제 전송(continue_)되는 요청(문서·서브리소스 모두)에는
+    정적 크롤과 동일하게 delay를 적용해 타깃 서버 부하를 제한한다. 다른 도메인(CDN·폰트 등)은
+    타깃 서버 부하가 아니므로 대상에서 제외한다. stop_event가 set되면 대기를 즉시 끊고
+    해당 요청을 abort한다([중단] 즉시 반응 — Playwright 콜백 스레드에서 예외를 밖으로
+    전파하지 않고 이 안에서 직접 처리한다).
+    activity: {"ts": float} — 같은 도메인 요청이 관측될 때마다 시각을 갱신한다.
+    _render_fetch가 load 이후 연쇄 XHR 드레인 완료 시점을 판단하는 데 사용한다.
     """
     def handler(route) -> None:
         req = route.request
@@ -392,10 +438,14 @@ def _make_route_handler(base_netloc: str,
             route.continue_()
             return
 
+        same_site = _same_site(parsed.netloc, base_netloc)
+        if same_site and activity is not None:
+            activity["ts"] = time.time()
+
         # 비-GET 차단 (C2) — GET 로그아웃도 abort (세션 보호)
         if method != "GET" or _is_logout_path(parsed.path):
             # POST: 같은 도메인이면 입력 포인트로 기록(전송은 차단)
-            if method == "POST" and _same_site(parsed.netloc, base_netloc):
+            if method == "POST" and same_site:
                 key = ("POST", url)
                 if key not in xhr_visited:
                     xhr_visited.add(key)
@@ -421,11 +471,12 @@ def _make_route_handler(base_netloc: str,
                             "params": params, "param_types": param_types,
                             "body_type": body_type,
                         })
+            # 전송 차단(abort)이므로 서버로 나가지 않음 — throttle 불필요
             route.abort()
             return
 
         # GET: 같은 도메인 + 쿼리 파라미터 있으면 입력 포인트로 기록
-        if _same_site(parsed.netloc, base_netloc):
+        if same_site:
             qs = parse_qs(parsed.query, keep_blank_values=True)
             if qs:
                 key = ("GET", url)
@@ -438,34 +489,58 @@ def _make_route_handler(base_netloc: str,
                         "params": params, "param_types": param_types,
                         "body_type": "form",
                     })
+
+        # 같은 도메인으로 실제 전송되는 요청 — throttle 적용 (C-R)
+        if same_site:
+            try:
+                wait_or_cancel(stop_event, delay)
+            except ScanCancelled:
+                # 콜백 스레드 밖(BFS 본 루프)에서 다음 wait_or_cancel(stop_event, 0)이
+                # 곧 ScanCancelled를 던져 크롤을 중단하므로, 여기서는 이 요청만 정리한다.
+                try:
+                    route.abort()
+                except Exception:
+                    pass
+                return
         route.continue_()
 
     return handler
 
 
 def _render_fetch(render_ctx,
-                  url: str, timeout: int, delay: float,
+                  url: str, delay: float,
                   xhr_points: List[Dict], xhr_visited: set,
                   base_netloc: str, stop_event=None) -> Optional["_RenderedResponse"]:
     """Playwright 컨텍스트로 URL을 렌더링하고 _RenderedResponse를 반환한다.
 
-    - 라우트 훅을 통해 C2 강제 + 네트워크 인터셉션 동시 적용.
-    - load 완료 후 networkidle을 최대 2초 추가 대기해 비동기 API 호출을 포착.
-    - 예외(타임아웃·크래시) 시 None 반환 → 호출부에서 정적 크롤 폴백.
+    - 라우트 훅을 통해 C2 강제 + 네트워크 인터셉션 + 같은 도메인 delay throttle 동시 적용(C-R).
+    - 문서·서브리소스 모두 라우트 훅에서 delay가 적용되므로(서버 부하는 정적 크롤과 동일하게
+      제한됨), 탐색(goto) 자체에는 고정 시간 상한을 두지 않는다(timeout=0) — 같은 도메인
+      서브리소스 수 × delay가 고정 timeout을 쉽게 넘을 수 있기 때문이다. 대신 [중단] 버튼으로
+      언제든 즉시 빠져나올 수 있다(라우트 훅의 stop_event 검사가 즉시 반응).
+    - load 완료 후 같은 도메인 후속 요청(연쇄 XHR)이 (delay + 여유시간) 동안 없을 때까지
+      최대 settle_cap초 대기해 비동기 API 호출을 포착한다. 폴링형 SPA의 무한 대기 방지를
+      위해 settle_cap으로 절대 상한을 둔다.
+    - 예외(크래시 등) 시 None 반환 → 호출부에서 정적 크롤 폴백.
     """
     page = None
     try:
+        activity: Dict[str, float] = {"ts": time.time()}
         page = render_ctx.new_page()
-        page.route("**/*", _make_route_handler(base_netloc, xhr_points, xhr_visited))
-        wait_or_cancel(stop_event, delay)
-        resp = page.goto(url, timeout=timeout * 1000, wait_until="load")
+        page.route("**/*", _make_route_handler(base_netloc, xhr_points, xhr_visited,
+                                                delay, stop_event, activity))
+        resp = page.goto(url, timeout=0, wait_until="load")
         if resp is None:
             return None
-        # networkidle 짧게 대기 — 비동기 fetch/XHR 호출까지 포착
-        try:
-            page.wait_for_load_state("networkidle", timeout=2000)
-        except Exception:
-            pass
+        # 연쇄 XHR 드레인 대기 — activity 시각이 quiet_window 이상 안 갱신되면 완료로 간주
+        quiet_window = (delay + 1.0) if delay and delay > 0 else 1.0
+        settle_cap = max(10.0, (delay or 0) * 6)
+        deadline = time.time() + settle_cap
+        while time.time() < deadline:
+            remaining = quiet_window - (time.time() - activity["ts"])
+            if remaining <= 0:
+                break
+            wait_or_cancel(stop_event, min(remaining, 0.5))
         ct = resp.headers.get("content-type", "") or ""
         rendered_html = page.content()
         final_url = page.url
@@ -487,7 +562,8 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
           proxies: Optional[Dict[str, str]] = None,
           auth_headers: Optional[Dict[str, str]] = None,
           render: bool = False,
-          stop_event: Optional["threading.Event"] = None) -> List[Dict[str, Any]]:
+          stop_event: Optional["threading.Event"] = None,
+          debug_sink: Optional[List[Tuple[str, str, str]]] = None) -> List[Dict[str, Any]]:
     """BFS 크롤링으로 같은 도메인 내 페이지를 수집한다.
 
     반환값 페이지 dict 필드:
@@ -501,6 +577,9 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
     render=True이면 Playwright Chromium으로 렌더링 후 DOM·XHR 트래픽을 수집한다.
     의존성 설치 실패 시 정적 requests 크롤로 자동 폴백.
     BFS 시작 전 robots.txt와 sitemap.xml에서 추가 시드를 수집한다.
+    debug_sink가 주어지면 AST 기반 엔드포인트 탐지(C13, _extract_links_from_body 참고)의
+    게이트 드롭 사유를 (timestamp, scope, message) 튜플로 append한다 — 호출자(각 모듈의
+    scan())가 자신의 debug_events 리스트를 그대로 넘기면 crawl_path.log에 함께 남는다.
     progress_cb: (current_visited, max_pages) 형식으로 매 페이지 방문 시 호출된다.
     """
     visited: set = set()
@@ -546,7 +625,7 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
                         {"name": k, "value": v, "domain": domain, "path": "/"}
                         for k, v in cookies.items()
                     ])
-            except Exception as e:
+            except Exception:
                 # 브라우저 기동 실패 → 정적 크롤로 폴백
                 render_ctx = None
                 if _browser:
@@ -561,14 +640,19 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
                         pass
                 _browser = _pw_mgr = None
 
-    # robots.txt / sitemap.xml 시드 수집 → 큐 선투입
-    extra_seeds = _seed_from_robots_sitemap(
-        base_netloc, scheme, timeout, cookies, proxies, auth_headers
-    )
-    queue: deque = deque([base_url] + extra_seeds)
+    queue: deque = deque([base_url])
     pages: List[Dict[str, Any]] = []
 
     try:
+        # robots.txt / sitemap.xml 시드 수집 → 큐 선투입
+        # try 블록 안에서 실행해야, 시드 수집 중 [중단](ScanCancelled)이 발생해도
+        # 아래 finally의 Playwright 리소스 정리가 보장된다.
+        extra_seeds = _seed_from_robots_sitemap(
+            base_netloc, scheme, timeout, cookies, proxies, auth_headers,
+            delay, stop_event
+        )
+        queue.extend(extra_seeds)
+
         while queue and len(visited) < max_pages:
             # [중단] 검사 — 매 페이지 진입 시 즉시 탈출 (render/static 양 경로 공통)
             wait_or_cancel(stop_event, 0)
@@ -598,7 +682,7 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
             # ── 렌더 경로 (render=True + 브라우저 기동 성공) ────────────────────
             resp = None
             if render_ctx:
-                resp = _render_fetch(render_ctx, url, timeout, delay,
+                resp = _render_fetch(render_ctx, url, delay,
                                      xhr_points, xhr_visited, base_netloc,
                                      stop_event=stop_event)
 
@@ -610,12 +694,18 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
                     try:
                         if attempt > 0:
                             wait_or_cancel(stop_event, 0.5 * attempt)
-                        # 렌더 경로에서 이미 delay를 소비했으면 첫 시도는 추가 sleep 생략
-                        if not (attempt == 0 and render_ctx):
-                            wait_or_cancel(stop_event, delay)
-                        resp = requests.get(url, timeout=timeout, verify=False,
-                                            allow_redirects=True, cookies=cookies,
-                                            proxies=proxies, headers=auth_headers or {})
+                        # C-R: 렌더 경로는 이제 요청 단위(라우트 훅)로 delay를 소비하며,
+                        # goto 자체가 요청 하나 못 띄우고 실패하는 경우(브라우저 크래시 등)
+                        # delay 소비가 0일 수 있으므로, 정적 폴백은 항상 delay를 적용한다
+                        # (렌더 소요 delay와 다소 겹치더라도 버스트보다 안전한 쪽을 택함).
+                        wait_or_cancel(stop_event, delay)
+                        # 요청 자체는 데몬 워커에서 실행 — 응답 대기 중에도 [중단]이 즉시 반응한다.
+                        resp = run_cancellable(
+                            lambda: requests.get(url, timeout=timeout, verify=False,
+                                                 allow_redirects=True, cookies=cookies,
+                                                 proxies=proxies, headers=auth_headers or {}),
+                            stop_event,
+                        )
                         break  # 성공
                     except (requests.exceptions.Timeout,
                             requests.exceptions.ChunkedEncodingError):
@@ -642,7 +732,8 @@ def crawl(base_url: str, base_netloc: str, timeout: int,
 
             # HTML·스크립트·JSON 본문에서 링크 추출해 큐에 추가
             if body:
-                for link in _extract_links_from_body(body, final_url, base_netloc, kind):
+                for link in _extract_links_from_body(body, final_url, base_netloc, kind,
+                                                     debug_sink=debug_sink):
                     if link not in visited:
                         queue.append(link)
 

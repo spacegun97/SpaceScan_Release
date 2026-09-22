@@ -5,11 +5,10 @@ WEB/WAS 서버 기본·샘플 페이지 노출 취약점 스캐너
 import json
 import os
 import re
-import time
 import requests
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Callable, Optional
-from ._cancel import wait_or_cancel
+from ._cancel import wait_or_cancel, run_cancellable, ScanCancelled
 
 # ── 카테고리 → 한국어 설명 매핑 ──────────────────────────────────────────
 CATEGORIES: Dict[str, str] = {
@@ -118,6 +117,18 @@ TECH_REGISTRY: Dict[str, Dict] = {
                 r"drupal\.org",
                 r"/sites/default/files/",
                 r"drupal-settings-json",
+            ],
+        },
+    },
+    "Gnuboard": {
+        "detect": {
+            "headers": {},
+            "body": [
+                r"var g5_url",
+                r"var g5_bbs_url",
+                r"var g5_cookie_domain",
+                r"/js/wrest\.js",
+                r"그누보드",
             ],
         },
     },
@@ -263,15 +274,6 @@ TECH_REGISTRY: Dict[str, Dict] = {
     },
 }
 
-# 사용자 입력 화면 카테고리 그룹 (출력 순서 결정)
-TECH_CATEGORIES = {
-    "WEB":         ["Apache", "Nginx", "IIS"],
-    "WAS":         ["Tomcat", "JBoss", "WebLogic", "WebSphere"],
-    "ERP":         ["SAP"],
-    "Application": ["WordPress", "Drupal", "CKEditor", "FCKEditor", "SmartEditor", "CrossEditor", "DEXT5"],
-    "Framework":   ["Spring", "PHP", "NodeJS", "Laravel", "Django", "ASPNET"],
-}
-
 # 백엔드 실행 확장자 → 언어 패밀리. 이 확장자를 가진 경로만 스택 게이팅 대상이 되며,
 # 목록에 없는 확장자(.js/.xml/.html/.config/.ini 등 정적·스택 무관 리소스)는 항상 프로빙한다.
 BACKEND_EXT: Dict[str, str] = {
@@ -286,7 +288,7 @@ STACK_BACKEND: Dict[str, str] = {
     "Tomcat": "java", "JBoss": "java", "WebLogic": "java", "WebSphere": "java",
     "SAP": "java", "Spring": "java",
     "IIS": "dotnet", "ASPNET": "dotnet",
-    "PHP": "php", "Laravel": "php", "WordPress": "php", "Drupal": "php",
+    "PHP": "php", "Laravel": "php", "WordPress": "php", "Drupal": "php", "Gnuboard": "php",
 }
 
 # 사용자가 직접 선택 가능한 백엔드 언어 패밀리 (BACKEND_EXT/STACK_BACKEND 값과 동일 집합).
@@ -322,14 +324,26 @@ def _load_paths(stack: str) -> List[Dict]:
 def _detect_stacks(target_url: str, timeout: int,
                    cookies: Optional[Dict[str, str]] = None,
                    proxies: Optional[Dict[str, str]] = None,
-                   auth_headers: Optional[Dict[str, str]] = None) -> List[str]:
-    """응답 헤더·바디 패턴 분석으로 기술 스택 탐지."""
+                   auth_headers: Optional[Dict[str, str]] = None,
+                   stop_event=None) -> List[str]:
+    """응답 헤더·바디 패턴 분석으로 기술 스택 탐지.
+
+    _run_scan의 모듈 루프 진입 전(스캔 시작 직후)에 호출되므로, 요청 대기 중 [중단]이
+    눌리면 여기서 소요될 시간(최대 timeout초)만큼 반응이 늦어질 수 있었다.
+    run_cancellable로 응답 대기 중에도 [중단]이 즉시 반응하게 한다.
+    ScanCancelled 발생 시에도 (다른 네트워크 예외와 동일하게) 빈 리스트로 조용히
+    반환한다 — 실제 스캔 중단 여부는 호출부(_run_scan) 모듈 루프의 job 플래그 검사가
+    담당하므로, 여기서 예외를 밖으로 전파할 필요가 없다(스레드 크래시 방지).
+    """
     detected: List[str] = []
     try:
-        resp = requests.get(target_url, timeout=timeout, verify=False,
-                            allow_redirects=True, cookies=cookies,
-                            proxies=proxies, headers=auth_headers or {})
-    except Exception:
+        resp = run_cancellable(
+            lambda: requests.get(target_url, timeout=timeout, verify=False,
+                                 allow_redirects=True, cookies=cookies,
+                                 proxies=proxies, headers=auth_headers or {}),
+            stop_event,
+        )
+    except (Exception, ScanCancelled):
         return detected
 
     headers = {k.lower(): v for k, v in resp.headers.items()}
@@ -366,7 +380,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          auth_headers: Optional[Dict[str, str]] = None,
          stop_event=None,
          backend_filter: bool = True,
-         backends: Optional[List[str]] = None) -> Dict[str, Any]:
+         backends: Optional[List[str]] = None,
+         flag_auth_blocked: bool = True) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "module":       "Default & Sample Pages",
         "target":       target_url,
@@ -441,9 +456,13 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
             if url not in seen_urls:
                 try:
                     wait_or_cancel(stop_event, delay)  # 속도 조절 딜레이 (+ [중단] 검사)
-                    resp = requests.get(url, timeout=timeout, verify=False,
-                                        allow_redirects=False, cookies=cookies,
-                                        proxies=proxies, headers=auth_headers or {})
+                    # 요청 자체는 데몬 워커에서 실행 — 응답 대기 중에도 [중단]이 즉시 반응한다.
+                    resp = run_cancellable(
+                        lambda: requests.get(url, timeout=timeout, verify=False,
+                                             allow_redirects=False, cookies=cookies,
+                                             proxies=proxies, headers=auth_headers or {}),
+                        stop_event,
+                    )
                 except requests.exceptions.ConnectionError:
                     # 조기 종료 시에도 지금까지 수집한 finding은 보존한다
                     result["error"] = "Connection refused"
@@ -453,19 +472,48 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
                     pass
                 else:
                     # 노출 판정: 200/301/302/401/403/405/415/500 = 리소스 존재
-                    # (severity 무관 — 리다이렉트·접근 제어·메서드·미디어타입·서버오류와 관계없이 존재 확인)
+                    # (접근 제어·메서드·미디어타입·서버오류와 관계없이 존재 확인)
                     # 301/302: 미인증 접근 시 로그온 페이지로 리다이렉트하는 관리 콘솔(NWA/UserAdmin/Portal 등) 탐지에 필요
-                    exposed = resp.status_code in (200, 301, 302, 401, 403, 405, 415, 500)
+                    #          단, 없는 경로도 404 대신 에러·안내 페이지로 리다이렉트하는 구현이 흔해
+                    #          존재 근거 신뢰도가 낮으므로 심각도는 아래에서 INFO로 강등한다
+                    # 401/403: flag_auth_blocked=False(기본값)면 노출 판정에서 아예 제외한다.
+                    #          접근 제어가 정상 동작 중인 리소스까지 매번 취약점으로 잡히는
+                    #          노이즈를 줄이기 위함 — 필요 시 사용자가 토글로 다시 켤 수 있다.
+                    status_codes = (200, 301, 302, 405, 415, 500)
+                    if flag_auth_blocked:
+                        status_codes += (401, 403)
+                    exposed = resp.status_code in status_codes
+                    # 200인데 본문이 비어 있으면(공백만 있는 경우 포함) 존재 신호로 신뢰 불가 → 노출 제외
+                    # (301/302 리다이렉트·401/403/405/415/500은 상태 코드 자체가 존재 신호이므로 대상 아님)
+                    if resp.status_code == 200 and not resp.text.strip():
+                        exposed = False
                     if exposed:
                         seen_urls.add(url)
-                        evidence = resp.text[:200].strip() if resp.text else str(resp.status_code)
+                        # 301/302는 본문 대신 리다이렉트 대상을 evidence로 노출한다
+                        # (allow_redirects=False로 받은 원본 응답이라 Location 헤더가 살아 있음).
+                        # Location 헤더가 없는 비정상 응답은 본문의 <a href="..."> 로 폴백한다.
+                        if resp.status_code in (301, 302):
+                            location = resp.headers.get("Location", "").strip()
+                            if not location:
+                                m = re.search(r'href=["\']([^"\']+)["\']', resp.text or "", re.IGNORECASE)
+                                location = m.group(1).strip() if m else ""
+                            evidence = (f"{resp.status_code} → {location}" if location
+                                        else f"{resp.status_code} (Location 헤더 없음)")
+                        else:
+                            evidence = resp.text[:200].strip() if resp.text else str(resp.status_code)
                         description = CATEGORIES.get(entry.get("category", ""), entry.get("category", ""))
                         note = entry.get("note")
                         if note:
                             description = f"{description} · {note}"
+                        severity = entry["severity"]
+                        # 리다이렉트(301/302)는 존재하지 않는 경로를 404 대신 에러·안내
+                        # 페이지로 보내는 구현이 흔해 리소스 존재 근거로 신뢰하기 어려움 → INFO 강등
+                        # 401/403은 접근 제어가 정상 동작 중임을 보여주는 응답이라 그 자체로는
+                        # 심각한 위험이 아니므로(리소스 존재만 확인됨) 항상 INFO로 강등한다.
+                        if resp.status_code in (301, 302, 401, 403):
+                            severity = "INFO"
                         # 본문에 "Burp Suite"가 포함되면 대상 서버 응답이 아닌
                         # BurpSuite 프록시 에러 페이지이므로 판정 신뢰 불가 → INFO 강등
-                        severity = entry["severity"]
                         if "Burp Suite" in resp.text:
                             severity = "INFO"
                             description = f"{description} · [프록시 오류 — BurpSuite 응답으로 판정 신뢰 불가, 재검증 필요]"

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from html import unescape as _html_unescape
 
 from . import _crawl
+from . import _endpoint_extract
 
 
 # ── WAF·에러 탐지 상수 ────────────────────────────────────────────────────────
@@ -253,7 +254,8 @@ def _extract_brace_content(text: str, open_pos: int) -> Optional[str]:
 
 def _parse_js_urls(body: str, page_url: str,
                    base_netloc: str,
-                   whole_script: bool = False) -> List[Dict[str, Any]]:
+                   whole_script: bool = False,
+                   debug_sink: Optional[List[Tuple[str, str, str]]] = None) -> List[Dict[str, Any]]:
     """JS 호출 URL과 JSON POST 바디 파라미터를 추출한다.
 
     whole_script=False (기본): HTML 내 <script> 블록 + 인라인 이벤트 핸들러만 파싱.
@@ -262,6 +264,12 @@ def _parse_js_urls(body: str, page_url: str,
     GET 주입 포인트: 쿼리스트링이 있는 URL.
     POST 주입 포인트: JSON.stringify / axios.post / $.post / $.ajax data 객체의 키.
     외부 도메인·로그아웃 경로는 수집 단계에서 즉시 드롭.
+
+    P9: 위 정규식(_JS_URL_PATTERNS)이 놓치는 동적 조립 URL·파라미터를 esprima/
+    tree-sitter AST 기반(js_analysis 재사용, _endpoint_extract 경유)으로 보강한다.
+    정규식 결과와 병합(union)만 하며 대체하지 않는다 — AST 파싱 실패·백엔드 미설치
+    시 조용히 빈 리스트로 폴백한다. debug_sink가 주어지면 게이트 드롭 사유를
+    append한다(기존 debug_events/crawl_path.log 관례 — 경로 미탐 트러블슈팅용).
     """
     points: List[Dict[str, Any]] = []
     # (url, method, frozenset(param_keys)) 기준 중복 방지
@@ -368,14 +376,53 @@ def _parse_js_urls(body: str, page_url: str,
                 "params": params, "param_types": param_types, "body_type": "json",
             })
 
+    # P9: AST 기반 엔드포인트 탐지로 보강. 같은 (url, method, params) 조합은 위에서
+    # 이미 seen에 잡혔으면 여기서 다시 걸러진다(정규식·AST 어느 쪽이 먼저 찾았든 union).
+    # js_analysis의 <form> 파서는 CSRF/보안 토큰 필드를 구분하지 않고 전부 수집하므로
+    # (범용 데이터플로우 분석기라 SQLi 전용 정책을 모름), 여기서 정규식 <form> 파싱과
+    # 동일한 CSRF_TOKEN_NAMES 제외를 적용해 잘못된 CSRF 값 전송으로 요청 자체가
+    # 거부되는 것을 방지한다 — 제외 후 남은 파라미터가 없으면 그 포인트는 버린다.
+    for pt in _endpoint_extract.discover_input_points(
+        body, page_url, base_netloc, whole_script, scope="input_points", debug_sink=debug_sink
+    ):
+        params = {k: v for k, v in pt["params"].items() if k.lower() not in CSRF_TOKEN_NAMES}
+        if not params:
+            continue
+        pt = {**pt, "params": params,
+              "param_types": {k: v for k, v in pt["param_types"].items() if k in params}}
+        key = (pt["url"], pt["method"], frozenset(pt["params"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        points.append(pt)
+
     return points
 
 
 # ── 입력 포인트 수집 ──────────────────────────────────────────────────────────
 
+def _dedup_points(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """parse_input_points()의 서로 다른 수집 단계(URL 쿼리/href/form/data-*/JS)가 같은
+    (url, method, 파라미터명 집합) 조합을 중복 발견할 수 있으므로(특히 P9의 AST 보강이
+    기존 정규식 수집 단계와 같은 지점을 다시 찾는 경우) 반환 직전 한 번 걸러낸다.
+    먼저 발견된 항목이 우선하도록 순서를 유지한 채 이후 중복만 제거한다 — 정규식
+    출처의 구체적인 param_types(visible/hidden 등)가 뒤이은 AST 출처의 일반 태그
+    (ast_url/ast_body)로 덮이지 않는다."""
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for pt in points:
+        key = (pt["url"], pt["method"], frozenset(pt["params"].keys()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(pt)
+    return out
+
+
 def parse_input_points(page_url: str, body: str,
                        base_netloc: str,
-                       kind: str = "html") -> List[Dict]:
+                       kind: str = "html",
+                       debug_sink: Optional[List[Tuple[str, str, str]]] = None) -> List[Dict]:
     """페이지 본문에서 입력 포인트를 수집한다.
 
     kind="html" (기본): HTML 전 항목 수집.
@@ -383,7 +430,8 @@ def parse_input_points(page_url: str, body: str,
       2. <a href> 쿼리 파라미터 (크롤러 미방문 링크 커버)
       3. <form> 필드(hidden 포함) — enctype에 따라 body_type = form/json/xml 분기
       4. data-url/href/action/src 속성의 쿼리 파라미터
-      5. JS 내부 URL / POST 바디 키 (fetch/XMLHttpRequest/$.ajax/axios 등)
+      5. JS 내부 URL / POST 바디 키 (fetch/XMLHttpRequest/$.ajax/axios 등, 정규식 +
+         esprima/tree-sitter AST 병합 — P9, _parse_js_urls 참고)
 
     kind="script": .js 파일 등 — HTML 구조 파싱 없이 본문 전체를 스크립트로 취급.
       URL 쿼리 파라미터(1)와 JS 호출 URL/POST 바디 키(5)만 수집.
@@ -406,8 +454,9 @@ def parse_input_points(page_url: str, body: str,
 
     # kind="script"이면 HTML 구조 파싱(2~4) 건너뛰고 JS 추출만 수행
     if kind == "script":
-        points.extend(_parse_js_urls(body, page_url, base_netloc, whole_script=True))
-        return points
+        points.extend(_parse_js_urls(body, page_url, base_netloc, whole_script=True,
+                                     debug_sink=debug_sink))
+        return _dedup_points(points)
 
     # kind="json"이면 JSON 본문을 재귀 탐색하여 URL 쿼리 파라미터를 수집한다
     if kind == "json":
@@ -445,7 +494,7 @@ def parse_input_points(page_url: str, body: str,
             _walk_json(_json_mod.loads(body))
         except Exception:
             pass
-        return points
+        return _dedup_points(points)
 
     # ── 2. <a href> 쿼리 파라미터 추출 (크롤러 미방문 링크 커버) ──
     for href_match in re.finditer(
@@ -597,9 +646,10 @@ def parse_input_points(page_url: str, body: str,
                            "body_type": "form"})
 
     # ── 5. JS 내부 URL / POST 바디 키 추출 ──
-    points.extend(_parse_js_urls(body, page_url, base_netloc, whole_script=False))
+    points.extend(_parse_js_urls(body, page_url, base_netloc, whole_script=False,
+                                 debug_sink=debug_sink))
 
-    return points
+    return _dedup_points(points)
 
 
 # ── 유사도·마커·Dynamic Content Masking ───────────────────────────────────────

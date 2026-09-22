@@ -324,6 +324,7 @@ def _ensure_extract_deps() -> None:
         print("  [*] openpyxl 설치 중...")
         subprocess.check_call([sys.executable, "-m", "pip", "install",
                                "--quiet", "openpyxl"])
+        importlib.invalidate_caches()  # 설치 직후 동일 프로세스에서 바로 import 가능하도록 캐시 무효화
         print("  [OK] openpyxl 설치 완료\n")
 
 
@@ -349,6 +350,7 @@ def _ensure_render_deps() -> bool:
                 import subprocess as _sp
                 print("  [*] playwright 설치 중...")
                 _sp.check_call([sys.executable, "-m", "pip", "install", "--quiet", "playwright"])
+                importlib.invalidate_caches()  # 설치 직후 동일 프로세스에서 바로 import 가능하도록 캐시 무효화
                 print("  [OK] playwright 설치 완료")
             # chromium 바이너리 설치 (이미 캐시돼 있으면 수초 내 완료)
             import subprocess as _sp
@@ -376,6 +378,7 @@ def _ensure_merge_deps() -> None:
         print(f"  [*] {', '.join(missing)} 설치 중...")
         subprocess.check_call([sys.executable, "-m", "pip", "install",
                                "--quiet"] + missing)
+        importlib.invalidate_caches()  # 설치 직후 동일 프로세스에서 바로 import 가능하도록 캐시 무효화
         print(f"  [OK] {', '.join(missing)} 설치 완료\n")
 
 
@@ -393,21 +396,84 @@ def _ensure_recon_deps() -> None:
         print(f"  [*] {', '.join(missing)} 설치 중...")
         subprocess.check_call([sys.executable, "-m", "pip", "install",
                                "--quiet"] + missing)
+        importlib.invalidate_caches()  # 설치 직후 동일 프로세스에서 바로 import 가능하도록 캐시 무효화
         print(f"  [OK] {', '.join(missing)} 설치 완료\n")
 
 
 def _ensure_jsanalysis_deps() -> None:
-    """JS/HTML/XFDL 분석 모드 진입 시점에 esprima를 lazy 설치한다.
+    """JS/HTML/XFDL 분석 모드 진입 시점에 파싱 백엔드 의존성을 lazy 설치한다.
 
-    esprima는 순수 파이썬 패키지이며 import명·pip 패키지명이 동일하다.
+    esprima(1차, ES2017, 순수 파이썬)에 더해 tree-sitter + tree-sitter-javascript
+    (2차, ES2020+, 네이티브 바이너리)도 함께 설치한다 — import명(밑줄)과 pip
+    패키지명(하이픈)이 다르므로 매핑해 확인한다.
     """
     import importlib.util
-    if importlib.util.find_spec("esprima") is None:
+    pkg_map = {"esprima": "esprima", "tree_sitter": "tree-sitter",
+               "tree_sitter_javascript": "tree-sitter-javascript"}
+    missing = [pkg_map[mod] for mod in pkg_map if importlib.util.find_spec(mod) is None]
+    if missing:
         import subprocess
-        print("  [*] esprima 설치 중...")
+        print(f"  [*] {', '.join(missing)} 설치 중...")
         subprocess.check_call([sys.executable, "-m", "pip", "install",
-                               "--quiet", "esprima"])
-        print("  [OK] esprima 설치 완료\n")
+                               "--quiet"] + missing)
+        importlib.invalidate_caches()  # 설치 직후 동일 프로세스에서 바로 import 가능하도록 캐시 무효화
+        print(f"  [OK] {', '.join(missing)} 설치 완료\n")
+
+
+# ── 기능별 lazy 설치 게이트 (웹 UI "설치 중" 알림 → 완료 후 자동 재개 흐름 지원) ──────
+# feature 키 → {import명: pip 패키지명} 매핑. render(playwright+Chromium)는 프로세스
+# 캐시(_RENDER_READY)로 별도 판정하므로 이 레지스트리에는 포함하지 않는다.
+_FEATURE_DEP_MODULES: Dict[str, Dict[str, str]] = {
+    "extract":    {"openpyxl": "openpyxl"},
+    "merge":      {"openpyxl": "openpyxl", "xlrd": "xlrd"},
+    "recon":      {"dns": "dnspython", "openpyxl": "openpyxl"},
+    "jsanalysis": {"esprima": "esprima", "tree_sitter": "tree-sitter",
+                   "tree_sitter_javascript": "tree-sitter-javascript"},
+}
+_FEATURE_ENSURE_FUNCS = {
+    "extract":    _ensure_extract_deps,
+    "merge":      _ensure_merge_deps,
+    "recon":      _ensure_recon_deps,
+    "jsanalysis": _ensure_jsanalysis_deps,
+}
+
+
+def feature_deps_status(feature: str) -> Dict[str, Any]:
+    """설치 시도 없이 현재 설치 여부만 조회한다.
+
+    프론트엔드가 기능 실행 버튼을 누른 시점에 먼저 호출해 설치 필요 여부를
+    판단 — 필요 시 "설치 중" 알림을 띄운 뒤 feature_deps_install()을 호출한다.
+    """
+    if feature == "render":
+        ready = _RENDER_READY is True
+        return {"ready": ready, "missing": [] if ready else ["playwright (+ Chromium 브라우저)"]}
+    mods = _FEATURE_DEP_MODULES.get(feature)
+    if mods is None:
+        return {"ready": True, "missing": []}
+    import importlib.util
+    missing = [pip_name for mod, pip_name in mods.items() if importlib.util.find_spec(mod) is None]
+    return {"ready": not missing, "missing": missing}
+
+
+def feature_deps_install(feature: str) -> Dict[str, Any]:
+    """해당 기능의 lazy 설치를 실행하고 결과를 반환한다.
+
+    성공 시 ready=True — 프론트는 이를 받아 "설치 완료, 실행을 계속합니다"
+    안내 후 원래 요청을 자동으로 이어서 보낸다. render는 실패해도 정적 크롤
+    폴백이 있으므로 fallback=True로 구분(치명적 오류 아님).
+    """
+    if feature == "render":
+        ok = _ensure_render_deps()
+        return {"ok": True, "ready": ok, "fallback": not ok,
+                "error": None if ok else "Chromium 설치 실패 — 정적 크롤로 진행합니다."}
+    ensure_func = _FEATURE_ENSURE_FUNCS.get(feature)
+    if ensure_func is None:
+        return {"ok": True, "ready": True, "fallback": False, "error": None}
+    try:
+        ensure_func()
+        return {"ok": True, "ready": True, "fallback": False, "error": None}
+    except Exception as e:
+        return {"ok": False, "ready": False, "fallback": False, "error": str(e)}
 
 
 def _estimate_dump(ctx, total_rows: int) -> Dict[str, float]:

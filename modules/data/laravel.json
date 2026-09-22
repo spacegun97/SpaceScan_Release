@@ -20,6 +20,53 @@
     {"path": "/config/app.php",                   "severity": "MEDIUM", "category": "config_exposure"},
     {"path": "/config/database.php",              "severity": "MEDIUM", "category": "config_exposure"},
     {"path": "/api/user",                         "severity": "MEDIUM", "category": "api_endpoint"},
-    {"path": "/sanctum/csrf-cookie",              "severity": "LOW",    "category": "api_endpoint"}
+    {"path": "/sanctum/csrf-cookie",              "severity": "LOW",    "category": "api_endpoint"},
+
+    {"path": "/.env.example",                     "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/.env.testing",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.env.production",                  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.env.staging",                     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/.env.dusk.local",                  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/bootstrap/cache/config.php",       "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/bootstrap/app.php",                "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/config/mail.php",                  "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/config/services.php",              "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/config/session.php",               "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/config/filesystems.php",           "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/config/queue.php",                 "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/config/broadcasting.php",          "severity": "LOW",    "category": "config_exposure"},
+
+    {"path": "/storage/logs/",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/storage/framework/sessions/",      "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/storage/app/public/",              "severity": "LOW",    "category": "default_resource"},
+    {"path": "/storage/",                         "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/public/storage/",                  "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/_ignition/scripts/ignition.js",    "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/_debugbar/assets/stylesheets",     "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/_clockwork/",                      "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/clockwork/",                       "severity": "MEDIUM", "category": "debug_endpoint"},
+
+    {"path": "/nova-api/",                        "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/nova-vendor/",                     "severity": "LOW",    "category": "default_resource"},
+    {"path": "/horizon/api/jobs/recent",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/horizon/api/masters",              "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/pulse",                            "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/vapor-ui/",                        "severity": "LOW",    "category": "admin_console"},
+
+    {"path": "/api/login",                        "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/api/register",                     "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/api/logout",                       "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/broadcasting/auth",                "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/oauth/authorize",                  "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/oauth/token",                      "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/oauth/clients",                    "severity": "MEDIUM", "category": "admin_console"},
+
+    {"path": "/vendor/laravel/framework/src/Illuminate/Foundation/Console/stubs/", "severity": "LOW", "category": "config_exposure"},
+    {"path": "/database/database.sqlite",         "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/database/migrations/",             "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/database/seeders/",                "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/routes/web.php",                   "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/routes/api.php",                   "severity": "LOW",    "category": "sensitive_file"}
   ]
 }

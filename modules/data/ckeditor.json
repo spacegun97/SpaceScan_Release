@@ -51,6 +51,25 @@
     {"path": "/ckfinder/core/connector/aspx/",                                     "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/ckfinder/core/connector/php/",                                      "severity": "MEDIUM", "category": "api_endpoint"},
     {"path": "/ckfinder/userfiles/files/",                                         "severity": "MEDIUM", "category": "default_resource"},
-    {"path": "/ckfinder/userfiles/images/",                                        "severity": "MEDIUM", "category": "default_resource"}
+    {"path": "/ckfinder/userfiles/images/",                                        "severity": "MEDIUM", "category": "default_resource"},
+
+    {"path": "/ckfinder/ckfinder.php",                                             "severity": "LOW",    "category": "default_resource"},
+    {"path": "/ckfinder/core/connector/cfm/connector.cfm",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/ckfinder/core/connector/java/connector",                            "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/ckfinder/config.js",                                                "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/ckfinder3/",                                                        "severity": "LOW",    "category": "default_resource"},
+    {"path": "/ckfinder2/",                                                        "severity": "LOW",    "category": "default_resource"},
+    {"path": "/js/ckeditor/",                                                      "severity": "LOW",    "category": "default_resource"},
+    {"path": "/js/ckfinder/",                                                      "severity": "LOW",    "category": "default_resource"},
+    {"path": "/assets/ckeditor/",                                                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/editor/ckeditor/",                                                  "severity": "LOW",    "category": "default_resource"},
+    {"path": "/lib/ckeditor/",                                                     "severity": "LOW",    "category": "default_resource"},
+    {"path": "/vendor/ckeditor/",                                                  "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/kcfinder/upload.php?type=files",                                    "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/kcfinder/core/",                                                    "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/kcfinder/core/autoload.php",                                        "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/kcfinder/uploads/files/",                                           "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/kcfinder/uploads/images/",                                          "severity": "MEDIUM", "category": "default_resource"}
   ]
 }

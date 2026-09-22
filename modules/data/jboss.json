@@ -33,6 +33,32 @@
     {"path": "/axis2/axis2-admin/",                  "severity": "MEDIUM", "category": "admin_console"},
     {"path": "/juddi/",                              "severity": "MEDIUM", "category": "admin_console"},
     {"path": "/webdav/",                             "severity": "MEDIUM", "category": "api_endpoint"},
-    {"path": "/ROOT/",                               "severity": "LOW",    "category": "default_resource"}
+    {"path": "/ROOT/",                               "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/jmx-console/HtmlAdaptor?action=inspectMBean&name=jboss.system:type=ServerInfo", "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/jbossas/",                            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/jbossws/services",                    "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/jbossmq-httpil/",                     "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/invoker/JMXInvokerServlet/",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/StatusServlet",                       "severity": "LOW",    "category": "status_page"},
+
+    {"path": "/management-console/",                 "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/management/console/",                 "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/console/App.html",                    "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wsdl/",                                "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/httpha-invoker/",                      "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/server.log",                          "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/boot.log",                            "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/conf/standalone.xml",                 "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/standalone/configuration/standalone.xml", "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/standalone/configuration/application-users.properties", "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/standalone/configuration/application-roles.properties", "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/standalone/log/server.log",           "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/server/default/conf/jboss-service.xml", "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/server/default/deploy/",              "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/wildfly/",                            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/error/",                              "severity": "LOW",    "category": "default_resource"}
   ]
 }

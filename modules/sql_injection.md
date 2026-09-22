@@ -17,6 +17,7 @@
 - **XML body 폼**: `<form enctype="application/xml">` 또는 `text/xml` — `body_type="xml"`로 분류되어 `<root><k>v</k>...</root>` 평면 트리로 조립 후 `application/xml` 헤더로 전송. payload 내 `<`/`>`/`&`는 의도적으로 이스케이프하지 않음 (XML 파싱 에러가 Error-based 탐지에 유리)
 - **JavaScript GET URL 파라미터**: `<script>` 블록, 인라인 이벤트 핸들러(`onclick` 등), `.js` 파일 본문에서 `fetch`, `XMLHttpRequest.open`, `$.get`/`$.post`/`$.ajax`, `axios.*`, `window.open`, `location.href/replace/assign` 호출의 URL 쿼리스트링 파라미터 추출. 백틱(`) 템플릿 리터럴은 동적 치환값의 모호성·외부 도메인 유출 리스크로 인해 의도적으로 제외
 - **JavaScript POST 바디 파라미터**: `fetch(url, {body: JSON.stringify({...})})` / `axios.post/put/patch/delete(url, {...})` / `$.post(url, {...})` / `$.ajax({url, data:{...}})` / `navigator.sendBeacon(url, JSON.stringify({...}))` / `XMLHttpRequest .open('POST', url)` + `.send(JSON.stringify({...}))` 패턴에서 요청 바디 객체의 키를 POST 파라미터로 수집 (`body_type="json"`). 객체 본문 추출 시 중괄호 균형 탐색(`_extract_brace_content`)을 사용하므로 `{a:{b:1}, c:2}` 형태의 중첩 객체에서도 최상위 키를 정확히 추출한다. HTML `<script>` 블록·인라인 핸들러·`.js` 파일 본문 모두 대상
+- **AST 기반 JS 엔드포인트 보강**(`param_types`: GET은 `ast_url`, POST는 `ast_body`): 위 두 항목의 정규식이 놓치는 동적 조립 URL·파라미터(변수 결합, `axios.create({baseURL})` 인스턴스, 게이트웨이형 action 분기의 N-hop 파라미터 전파 등)를 esprima/tree-sitter AST(`js_analysis.extract_endpoints()` 재사용, `modules/_endpoint_extract.py` 경유)로 보강한다. 정규식 결과와 병합(union)만 하며 대체하지 않는다. 게이트(동일 사이트/로그아웃 경로/경로·호스트의 미해소 플레이스홀더)를 통과한 것만 등록되며, 파라미터 값에 미해소 플레이스홀더나 호출자 인자 표현식(`row.uid` 등)이 남아 있어도 입력 포인트로는 그대로 등록한다(어차피 주입 시 값을 덮어씀). `<form>` 필드와 마찬가지로 CSRF/보안 토큰 성격 필드는 제외한다. 파싱 실패·백엔드 미설치 시 조용히 빈 결과로 폴백(정규식 결과는 그대로 유지)
 - `enctype="multipart/form-data"` 폼은 스킵
 
 **hidden 필드 처리:**  
@@ -168,6 +169,7 @@ Error-based에서 이미 취약으로 확인된 파라미터는 중복 finding �
     "debug_events": list[tuple[str, str, str]],  # [(iso_ts, scope, msg)] — 핵심 흐름 이벤트
 }
 ```
+`crawl_cache` 재사용으로 실제 크롤을 수행하지 않았으면 `crawl_events`는 빈 리스트다(크롤을 수행한 다른 모듈이 이미 같은 방문 기록을 남겼으므로 로그 중복 방지).
 
 ## 심각도
 
@@ -200,8 +202,9 @@ Error-based에서 이미 취약으로 확인된 파라미터는 중복 finding �
 | `proxies` | dict \| None | None | `{"http": ..., "https": ...}` 형식의 프록시 설정 |
 | `progress_cb` | callable \| None | None | 하위 진행률 보고 콜백 `(current, total)`. 크롤링 0~40%, 입력 포인트 스캔 40~100% 범위로 보고 |
 | `auth_headers` | dict \| None | None | 모든 HTTP 요청 헤더에 영구 부착 (Authorization 등). `requests.Session.headers`에 등록 |
-| `render` | bool | False | JS 렌더링 활성화. Playwright Chromium으로 DOM 렌더링 + 네트워크 인터셉션 + JSON 응답 채굴. 최초 ON 시 `_ensure_render_deps()`가 playwright·Chromium을 lazy 설치. 실패 시 정적 크롤 폴백 |
+| `render` | bool | False | JS 렌더링 활성화. Playwright Chromium으로 DOM 렌더링 + 네트워크 인터셉션 + JSON 응답 채굴. 최초 ON 시 `_ensure_render_deps()`가 playwright·Chromium을 lazy 설치. 실패 시 정적 크롤 폴백. 같은 도메인 서브리소스에도 `delay`가 적용된다 |
 | `stop_event` | Event \| None | None | [중단] 신호. set 시 크롤·입력 포인트 스캔의 요청 직전·딜레이 대기에서 `wait_or_cancel()`이 `ScanCancelled`를 던져 즉시 중단. `_run_scan()`이 주입 |
+| `crawl_cache` | dict \| None | None | `{"pages": [...]}`. 값이 있으면 BFS 크롤을 재실행하지 않고 재사용(동일 스캔 잡 내 `directory_listing`·`path_traversal`과 크롤 결과 공유, 중복 요청 방지). `_run_scan()`이 주입, 직접 호출 시 생략하면 항상 크롤 수행 |
 
 **리다이렉트 도메인 검증:**  
 `_request` 내부에서 응답의 최종 URL(`resp.url`)을 `_crawl._same_site()`로 `base_netloc`과 비교한다. 동일 사이트(`www.` 유무·대소문자 차이는 동일 취급)를 벗어난 경우 `ValueError`를 발생시켜 해당 요청 결과를 무시한다. 세션 쿠키가 외부 도메인으로 전송되는 것을 방지한다.

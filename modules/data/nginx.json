@@ -23,6 +23,44 @@
     {"path": "/access.log",                "severity": "LOW",    "category": "sensitive_file"},
     {"path": "/error.log",                 "severity": "LOW",    "category": "sensitive_file"},
     {"path": "/logs/access.log",           "severity": "LOW",    "category": "sensitive_file"},
-    {"path": "/logs/error.log",            "severity": "LOW",    "category": "sensitive_file"}
+    {"path": "/logs/error.log",            "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/nginx.conf.bak",            "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/nginx.conf.orig",           "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/nginx.conf~",               "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/sites-available/default",   "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/sites-enabled/default",     "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/conf.d/default.conf",       "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/conf.d/",                   "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/mime.types",                "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/fastcgi_params",            "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/fastcgi.conf",              "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/uwsgi_params",              "severity": "LOW",    "category": "config_exposure"},
+
+    {"path": "/var/log/nginx/access.log",  "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/var/log/nginx/error.log",   "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/php-fpm/status",            "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/fpm-status",                "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/fpm-ping",                  "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/ping",                      "severity": "LOW",    "category": "status_page"},
+
+    {"path": "/pma/",                      "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/myadmin/",                  "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/dbadmin/",                  "severity": "MEDIUM", "category": "admin_console"},
+
+    {"path": "/php.ini",                   "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/phpinfo.php5",              "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/i.php",                     "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/pi.php",                    "severity": "MEDIUM", "category": "debug_endpoint"},
+    {"path": "/php_info.php",              "severity": "MEDIUM", "category": "debug_endpoint"},
+
+    {"path": "/welcome-nginx.html",        "severity": "LOW",    "category": "default_resource"},
+    {"path": "/index.nginx-debian.html",   "severity": "LOW",    "category": "default_resource"},
+    {"path": "/nginx-logo.png",            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/favicon.ico",               "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/.well-known/acme-challenge/", "severity": "LOW",  "category": "config_exposure"},
+    {"path": "/robots.txt",                "severity": "LOW",    "category": "config_exposure"}
   ]
 }

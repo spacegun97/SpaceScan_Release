@@ -2,14 +2,13 @@
 디렉토리 리스팅 취약점 스캐너
 크롤링으로 실제 존재하는 경로를 수집한 뒤, 해당 경로들의 상위 디렉토리에 대해 리스팅 여부를 확인한다.
 """
-import time
 import re
 import requests
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import Dict, Any, Set, Callable, Optional, List, Tuple
 from . import _crawl
-from ._cancel import wait_or_cancel
+from ._cancel import wait_or_cancel, run_cancellable
 
 LISTING_SIGNATURES = [
     r"Index of /",
@@ -28,7 +27,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
          auth_headers: Optional[Dict[str, str]] = None,
-         render: bool = False, stop_event=None) -> Dict[str, Any]:
+         render: bool = False, stop_event=None,
+         crawl_cache: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     result = {
         "module":       "Directory Listing",
         "target":       target_url,
@@ -43,16 +43,29 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     base_netloc = urlparse(target_url).netloc
 
     # Phase 1: BFS 크롤링 (진행률 0~50% 구간에 매핑)
-    crawl_cb = None
-    if progress_cb:
-        def crawl_cb(cur, total):
-            progress_cb(int(cur / total * 50) if total else 0, 100)
-    pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages, cookies,
-                         progress_cb=crawl_cb, proxies=proxies,
-                         auth_headers=auth_headers, render=render,
-                         stop_event=stop_event)
-    debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
-                         "directory_listing", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
+    # crawl_cache에 이미 결과가 있으면(같은 스캔 잡의 다른 모듈이 동일 target·설정으로
+    # 먼저 크롤을 마쳤으면) 재사용해 중복 크롤(타깃 서버 중복 요청)을 피한다.
+    cache_hit = crawl_cache is not None and "pages" in crawl_cache
+    if cache_hit:
+        pages = crawl_cache["pages"]
+        debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
+                             "directory_listing",
+                             f"BFS 크롤링 재사용: {len(pages)}개 페이지 (중복 요청 생략)"))
+        if progress_cb:
+            progress_cb(50, 100)
+    else:
+        crawl_cb = None
+        if progress_cb:
+            def crawl_cb(cur, total):
+                progress_cb(int(cur / total * 50) if total else 0, 100)
+        pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages, cookies,
+                             progress_cb=crawl_cb, proxies=proxies,
+                             auth_headers=auth_headers, render=render,
+                             stop_event=stop_event, debug_sink=debug_events)
+        debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
+                             "directory_listing", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
+        if crawl_cache is not None:
+            crawl_cache["pages"] = pages
     endpoints = {p["path"] for p in pages}
 
     # Phase 2: 수집된 경로에서 상위 디렉토리 추출
@@ -68,9 +81,13 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
         url = base + dir_path
         try:
             wait_or_cancel(stop_event, delay)
-            resp = requests.get(url, timeout=timeout, verify=False,
-                                allow_redirects=True, cookies=cookies,
-                                proxies=proxies, headers=auth_headers or {})
+            # 요청 자체는 데몬 워커에서 실행 — 응답 대기 중에도 [중단]이 즉시 반응한다.
+            resp = run_cancellable(
+                lambda: requests.get(url, timeout=timeout, verify=False,
+                                     allow_redirects=True, cookies=cookies,
+                                     proxies=proxies, headers=auth_headers or {}),
+                stop_event,
+            )
 
             # 리다이렉트 후 도메인이 달라지면 제외 (www 유무·대소문자는 동일 사이트로 취급)
             if not _crawl._same_site(urlparse(resp.url).netloc, base_netloc):
@@ -96,7 +113,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
             # 조기 종료 시에도 지금까지 수집한 finding은 보존한다
             result["error"] = "Connection refused"
             result["findings"] = findings
-            result["crawl_events"] = [(p["visited_at"], p["url"]) for p in pages]
+            # 캐시 재사용 시에는 이미 기록된 크롤 로그이므로 중복 출력하지 않는다
+            result["crawl_events"] = [] if cache_hit else [(p["visited_at"], p["url"]) for p in pages]
             return result
         except Exception:
             continue
@@ -108,7 +126,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
                          "directory_listing", f"스캔 완료: {len(findings)}개 취약점"))
     result["findings"]     = findings
-    result["crawl_events"] = [(p["visited_at"], p["url"]) for p in pages]
+    # 캐시 재사용 시에는 이미 기록된 크롤 로그이므로 중복 출력하지 않는다
+    result["crawl_events"] = [] if cache_hit else [(p["visited_at"], p["url"]) for p in pages]
     return result
 
 

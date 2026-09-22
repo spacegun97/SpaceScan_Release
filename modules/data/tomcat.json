@@ -31,6 +31,43 @@
     {"path": "/WEB-INF/classes/",          "severity": "LOW",    "category": "sensitive_file"},
     {"path": "/META-INF/",                 "severity": "LOW",    "category": "sensitive_file"},
     {"path": "/conf/tomcat-users.xml",     "severity": "LOW",    "category": "sensitive_file"},
-    {"path": "/conf/server.xml",           "severity": "LOW",    "category": "sensitive_file"}
+    {"path": "/conf/server.xml",           "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/manager/jmxproxy/?qry=Catalina:type=Environment,resourcetype=Global,name=*", "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/host-manager/jmxproxy/",    "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/manager/images/",           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/manager/css/",              "severity": "LOW",    "category": "default_resource"},
+    {"path": "/examples/jsp/dates/date.jsp","severity": "LOW",   "category": "sample_app"},
+    {"path": "/examples/jsp/num/numguess.jsp","severity": "LOW", "category": "sample_app"},
+    {"path": "/examples/jsp/cal/cal1.jsp", "severity": "LOW",    "category": "sample_app"},
+    {"path": "/examples/jsp/error/error.html","severity": "LOW","category": "sample_app"},
+    {"path": "/examples/jsp/sessions/carts.html","severity": "LOW","category": "sample_app"},
+    {"path": "/examples/servlets/servlet/HelloWorldExample","severity": "LOW","category": "sample_app"},
+    {"path": "/examples/servlets/servlet/CookieExample","severity": "LOW","category": "sample_app"},
+    {"path": "/examples/servlets/servlet/RequestParamExample","severity": "LOW","category": "sample_app"},
+    {"path": "/examples/servlets/index.html","severity": "LOW", "category": "sample_app"},
+
+    {"path": "/conf/web.xml",              "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/conf/context.xml",          "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/conf/catalina.properties",  "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/conf/logging.properties",   "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/META-INF/context.xml",      "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/WEB-INF/lib/",              "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/WEB-INF/",                  "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/logs/catalina.out",         "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/logs/catalina.log",         "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/logs/localhost.log",        "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/logs/localhost_access_log.txt", "severity": "MEDIUM", "category": "sensitive_file"},
+
+    {"path": "/manager/status/all",        "severity": "MEDIUM", "category": "status_page"},
+    {"path": "/webdav/",                   "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/cgi-bin/",                  "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/ROOT/",                     "severity": "LOW",    "category": "default_resource"},
+    {"path": "/ROOT/WEB-INF/web.xml",      "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/tomcat.css",                "severity": "LOW",    "category": "default_resource"},
+    {"path": "/tomcat.gif",                "severity": "LOW",    "category": "default_resource"},
+    {"path": "/tomcat.svg",                "severity": "LOW",    "category": "default_resource"}
   ]
 }

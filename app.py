@@ -12,7 +12,7 @@ import time
 import argparse
 import webbrowser
 from datetime import datetime
-from typing import Callable, Optional, Dict
+from typing import Callable, Optional, Dict, Any
 from urllib.parse import urlparse, parse_qsl
 
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
@@ -25,7 +25,8 @@ from _core import (normalize_url, calculate_risk, generate_html_report,
                    save_crawl_log, parse_cookie_string, SPEED_DELAY,
                    EXTRACT_SPEED_DELAY, _ensure_extract_deps,
                    _estimate_dump, _ensure_merge_deps, _ensure_recon_deps,
-                   _ensure_jsanalysis_deps)
+                   _ensure_jsanalysis_deps, feature_deps_status,
+                   feature_deps_install)
 from modules import MODULE_MAP, sqli_extract, excel_merge, recon, js_analysis
 from modules._cancel import ScanCancelled
 from _runner import build_module_extra, run_single_module, MODULES_WITH_PROGRESS_CB
@@ -47,8 +48,13 @@ extract_lock = threading.Lock()
 recon_jobs: dict = {}
 
 # ── JS/HTML/XFDL 분석 모드 ───────────────────────────────────────────────────
-# 동기 처리(백그라운드 job 아님) — analysis_id로 결과만 캐시, 1시간 TTL GC
+# 백그라운드 job(진행률 표시 + 즉시 중단 지원) — analysis_id로 상태/결과 캐시, 1시간 TTL GC
 jsanalysis_jobs: dict = {}
+# js_analysis.analyze()는 난독화된 코드 대응을 위해 재귀 한계를 상향해 순회하므로(모듈
+# 상단 _RECURSION_LIMIT 참고), 이를 실제로 감당하려면 이 스레드의 OS 스택도 커야 한다
+# (한계만 올리고 스택은 그대로면 재귀 한계에 닿기 전에 스택 오버플로로 프로세스가 죽을
+# 수 있음). analyze()의 유일한 호출 경로가 이 스레드이므로 여기서만 국소적으로 키운다.
+_JSANALYSIS_THREAD_STACK_SIZE = 64 * 1024 * 1024  # 64MB
 
 
 def _build_proxies(proxy_host, proxy_port) -> Optional[dict]:
@@ -92,6 +98,7 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
               auth_headers: Optional[dict] = None,
               render: bool = False,
               backend_filter: bool = True,
+              flag_auth_blocked: bool = True,
               start_idx: int = 0):
     job = scan_jobs[job_id]
     job["status"] = "running"
@@ -108,7 +115,7 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
     if "default_pages" in modules[start_idx:]:
         dp_mod, _ = MODULE_MAP["default_pages"]
         auto = dp_mod._detect_stacks(target, timeout, cookies, proxies=proxies,
-                                     auth_headers=auth_headers)
+                                     auth_headers=auth_headers, stop_event=stop_event)
         # 유효한 스택명만 허용 (TECH_REGISTRY에 없는 값 필터링)
         extra = [s for s in (user_stacks or []) if s in dp_mod.TECH_REGISTRY]
         stacks_for_default = list(set(auto) | set(extra))
@@ -117,6 +124,11 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
 
     total_modules = len(modules)
     per_module = 100 / total_modules if total_modules else 0
+
+    # 크롤 결과 공유 캐시 — 이번 _run_scan 호출 범위 내에서 directory_listing / sql_injection /
+    # path_traversal이 동일 target·설정(delay·max_pages·render·cookies 등)으로 크롤하므로,
+    # 첫 모듈이 채운 크롤 결과를 이후 모듈이 재사용해 중복 크롤(서버 요청 중복)을 없앤다.
+    crawl_cache: Dict[str, Any] = {}
 
     for module_idx, key in enumerate(modules):
         if module_idx < start_idx:
@@ -138,7 +150,9 @@ def _run_scan(job_id: str, target: str, modules: list, timeout: int,
                                    max_pages=max_pages, progress_cb=progress_cb,
                                    render=render, stop_event=stop_event,
                                    backend_filter=backend_filter,
-                                   backends=backends_for_default)
+                                   backends=backends_for_default,
+                                   flag_auth_blocked=flag_auth_blocked,
+                                   crawl_cache=crawl_cache)
         res = run_single_module(mod, label, target, timeout, delay,
                                 cookies, proxies=proxies, auth_headers=auth_headers,
                                 **extra)
@@ -182,6 +196,24 @@ def index():
     return render_template("dashboard.html")
 
 
+# ── 기능별 lazy 설치 게이트 API (공통) ───────────────────────────────────────
+# 프론트가 실행 버튼 클릭 시 먼저 status로 설치 필요 여부를 확인하고,
+# 미설치면 "설치 중" 알림 표시 후 install을 호출 → 완료되면 원래 요청을 자동 재개한다.
+# feature 키: extract / merge / recon / jsanalysis / render
+
+@app.route("/api/deps/status")
+def deps_status():
+    feature = request.args.get("feature", "").strip()
+    return jsonify(feature_deps_status(feature))
+
+
+@app.route("/api/deps/install", methods=["POST"])
+def deps_install():
+    data = request.json or {}
+    feature = (data.get("feature") or "").strip()
+    return jsonify(feature_deps_install(feature))
+
+
 @app.route("/api/scan", methods=["POST"])
 def start_scan():
     data       = request.json or {}
@@ -195,6 +227,9 @@ def start_scan():
     max_pages  = max(10, min(30000, max_pages))  # 10~30000 범위 보정
     render     = bool(data.get("render", False))
     backend_filter = bool(data.get("backend_filter", True))
+    # 401/403 응답을 default_pages 취약점으로 표시할지 여부 (기본 True — API 하위호환,
+    # 대시보드는 체크박스 기본 OFF로 false를 명시 전송)
+    flag_auth_blocked = bool(data.get("flag_auth_blocked", True))
     # 쿠키 문자열 파싱: "key=val; key2=val2" → dict (빈 값이면 None)
     cookies_str = data.get("cookies", "").strip()
     cookies = parse_cookie_string(cookies_str) if cookies_str else {}
@@ -234,13 +269,14 @@ def start_scan():
             "user_stacks": user_stacks, "user_backends": user_backends,
             "auth_headers": auth_headers or None,
             "render": render, "backend_filter": backend_filter,
+            "flag_auth_blocked": flag_auth_blocked,
         },
     }
     threading.Thread(
         target=_run_scan,
         args=(job_id, target, modules, timeout, delay, max_pages,
               cookies or None, proxies, user_stacks, user_backends, auth_headers or None,
-              render, backend_filter),
+              render, backend_filter, flag_auth_blocked),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
@@ -333,7 +369,8 @@ def resume_scan(job_id):
               params["target"], params["modules"], params["timeout"],
               params["delay"],  params["max_pages"], params["cookies"],
               params["proxies"], params["user_stacks"], params["user_backends"],
-              params["auth_headers"], params["render"], params["backend_filter"]),
+              params["auth_headers"], params["render"], params["backend_filter"],
+              params["flag_auth_blocked"]),
         kwargs={"start_idx": start_idx},
         daemon=True,
     ).start()
@@ -410,22 +447,24 @@ def _gc_recon_jobs() -> None:
 
 
 def _gc_jsanalysis_jobs() -> None:
-    """1시간 경과한 분석 결과를 정리한다 (메모리 누수 방지).
+    """완료/취소/에러 후 1시간 경과한 분석 job을 정리한다 (메모리 누수 방지).
 
-    분석은 동기 처리이므로 생성 시점 = 완료 시점이라 created_at만 비교한다.
-    /api/jsanalysis/analyze 진입부에서 호출된다.
+    백그라운드로 실행되므로(진행률 표시 + 즉시 중단 지원) 실행 중(pending/running)인 job은
+    완료 시점을 알 수 없어 GC 대상에서 제외한다. /api/jsanalysis/analyze 진입부에서 호출된다.
     """
     now = time.time()
     expired = [
         aid for aid, a in list(jsanalysis_jobs.items())
-        if (now - _to_ts(a["created_at"])) > JOB_TTL_SEC
+        if a.get("status") in ("completed", "cancelled", "error")
+        and a.get("completed_at")
+        and (now - _to_ts(a["completed_at"])) > JOB_TTL_SEC
     ]
     for aid in expired:
         del jsanalysis_jobs[aid]
 
 
 def _run_recon_job(job_id: str, domain: str, sources: list, timeout: int,
-                   max_subdomains: int) -> None:
+                   max_subdomains: int, exclude_static: bool) -> None:
     """정보수집 백그라운드 실행 — run_recon() 실행 후 HTML/Excel 리포트 생성."""
     job = recon_jobs[job_id]
     job["status"] = "running"
@@ -436,6 +475,7 @@ def _run_recon_job(job_id: str, domain: str, sources: list, timeout: int,
     try:
         result = recon.run_recon(
             domain, sources, timeout=timeout, max_subdomains=max_subdomains,
+            exclude_static=exclude_static,
             progress_cb=progress_cb, stop_event=job["stop_event"],
         )
         job["result"] = result
@@ -672,10 +712,12 @@ def _save_excel_incremental(job: dict, action_id: str, mode: str = "extract") ->
 
 def _ensure_totals(extracted: dict) -> dict:
     """구버전 엑셀 로드 등으로 totals 키가 없는 extracted를 방어적으로 보정."""
-    totals = extracted.setdefault("totals", {"databases": None, "tables": {}, "columns": {}})
+    totals = extracted.setdefault(
+        "totals", {"databases": None, "tables": {}, "columns": {}, "rows": {}})
     totals.setdefault("databases", None)
     totals.setdefault("tables", {})
     totals.setdefault("columns", {})
+    totals.setdefault("rows", {})
     return totals
 
 
@@ -1230,7 +1272,16 @@ def _dispatch_extract_action(action: str, data: dict, ctx, extracted: dict, job:
             action_id = f"dump_estimate:{key}"
 
             def fn(j):
-                total = sqli_extract.count_table(ctx, db, tbl) or 0
+                # 이전 estimate(같은 job) 또는 엑셀 재사용 로드로 이미 확정된 total이
+                # 있으면 재사용 — databases/tables/columns와 동일한 캐싱 원칙
+                # (boolean-blind COUNT는 15~20+ 요청이라 재조회 비용이 큼).
+                # 데이터가 실제로 바뀌었을 가능성은 다른 3단계와 동일하게 감수하는
+                # 트레이드오프(design.md에 이미 기록된 한계와 동일선상)
+                row_totals = _ensure_totals(extracted)["rows"]
+                total = row_totals.get(key)
+                if total is None:
+                    total = sqli_extract.count_table(ctx, db, tbl) or 0
+                    row_totals[key] = total
                 # 테이블별로 키잉 — 다른 테이블 estimate 조회 중 확정 요청이 들어와도
                 # 엉뚱한 total이 재사용되지 않도록 방지
                 j.setdefault("estimate_totals", {})[key] = total
@@ -1529,7 +1580,9 @@ def extract_cancel(job_id):
     job = extract_jobs.get(job_id)
     if not job:
         return jsonify({"error": "Not found"}), 404
-    if job["status"] in ("completed", "cancelled", "error"):
+    # "error"(WAF 차단 등으로 이미 실행 스레드가 종료된 상태)는 허용 — 여기서는 재시도가
+    # 아니라 GC 마킹(정리) 목적이므로 아래 current_action_id 미보유 분기로 바로 cancelled 전환된다.
+    if job["status"] in ("completed", "cancelled"):
         return jsonify({"error": "이미 종료된 job"}), 400
 
     data = request.json or {}
@@ -1652,6 +1705,8 @@ def recon_start():
     max_subdomains = max(recon.MIN_MAX_SUBDOMAINS,
                          min(recon.MAX_MAX_SUBDOMAINS,
                              int(data.get("max_subdomains", recon.DEFAULT_MAX_SUBDOMAINS))))
+    # 정적 리소스(이미지/폰트/CSS/동영상) URL 수집 제외 여부 — 기본 True
+    exclude_static = bool(data.get("exclude_static", True))
 
     job_id = f"recon_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
     recon_jobs[job_id] = {
@@ -1664,7 +1719,7 @@ def recon_start():
     }
     threading.Thread(
         target=_run_recon_job,
-        args=(job_id, domain, sources, timeout, max_subdomains),
+        args=(job_id, domain, sources, timeout, max_subdomains, exclude_static),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
@@ -1724,16 +1779,68 @@ def recon_report_excel(job_id):
 
 # ── JS/HTML/XFDL 분석 모드 ───────────────────────────────────────────────────
 
+def _run_jsanalysis_job(analysis_id: str, sources: list) -> None:
+    """JS 데이터플로우 분석 백그라운드 실행 — js_analysis.analyze()의 progress_cb/stop_event로
+    진행률 통지 및 [중단] 버튼에 의한 즉시 취소를 지원한다."""
+    job = jsanalysis_jobs[analysis_id]
+    job["status"] = "running"
+
+    def progress_cb(pct: int, stage: str) -> None:
+        job["progress"] = pct
+        job["stage"] = stage
+
+    try:
+        result = js_analysis.analyze(sources, progress_cb=progress_cb, stop_event=job["stop_event"])
+        job["result"] = result
+        job["summary"] = {
+            "files": result["files"],
+            "function_count": len(result["functions"]),
+            "module_edge_count": len(result["modules"]["edges"]),
+            "module_unresolved_count": len(result["modules"]["unresolved"]),
+            "endpoint_count": len(result["endpoints"]),
+            "candidate_endpoint_count": len(result["candidate_endpoints"]),
+        }
+        job["progress"] = 100
+        job["stage"] = "완료"
+        job["status"] = "completed"
+    except ScanCancelled:
+        job["status"] = "cancelled"
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+    finally:
+        job["completed_at"] = datetime.now().isoformat()
+
+
+def _jsanalysis_result_or_404(analysis_id: str):
+    """analysis_id로 완료된 job의 result를 조회. (result, None) 또는 (None, error_response)를 반환.
+
+    job이 없으면 만료/오탈자, 있지만 아직 완료 전이면 진행 중, completed가 아니면(cancelled/error)
+    결과가 없다는 뜻이므로 각각 구분되는 메시지로 안내한다.
+    """
+    job = jsanalysis_jobs.get(analysis_id)
+    if not job:
+        return None, (jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404)
+    if job["status"] in ("pending", "running"):
+        return None, (jsonify({"error": "분석이 아직 진행 중입니다."}), 409)
+    if job["status"] != "completed" or job["result"] is None:
+        return None, (jsonify({"error": job.get("error") or "분석이 완료되지 않았습니다."}), 404)
+    return job["result"], None
+
+
 @app.route("/api/jsanalysis/analyze", methods=["POST"])
 def jsanalysis_analyze():
-    """.js/.html/.xfdl/.xadl/.xjs/.xml 업로드 → 함수 인벤토리 + 호출 그래프 + 데이터플로우 정적 분석.
+    """.js/.axd/.html/.xfdl/.xadl/.xjs/.xml 업로드 → 함수 인벤토리 + 호출 그래프 + 데이터플로우 +
+    엔드포인트(HTTP 요청 sink) 정적 분석 job을 백그라운드로 시작.
 
     완전 오프라인(외부 요청 없음). multipart/form-data 수신:
-      files: 업로드 파일 목록 (.js/.html/.htm/.xfdl/.xadl/.xjs/.xml)
+      files: 업로드 파일 목록 (.js/.axd/.html/.htm/.xfdl/.xadl/.xjs/.xml)
 
-    응답 JSON: analysis_id, files(파일별 처리 통계), function_count
-    분석 결과는 analysis_id로 서버에 캐시되어(TTL 1시간) 이후 검색/상세/그래프
-    요청 시 재업로드·재파싱 없이 재사용된다.
+    응답 JSON: analysis_id (즉시 반환). 진행률/완료 여부는 /api/jsanalysis/<id>/status로
+    폴링하고, 완료(status="completed") 후 summary(files/function_count/module_edge_count/
+    module_unresolved_count/endpoint_count/candidate_endpoint_count)를 확인한 뒤
+    검색/상세/그래프 API를 호출한다. 중단은 /api/jsanalysis/<id>/cancel. 분석 결과는
+    analysis_id로 서버에 캐시되어(TTL 1시간) 이후 요청 시 재업로드·재파싱 없이 재사용된다.
     """
     _ensure_jsanalysis_deps()
     _gc_jsanalysis_jobs()
@@ -1746,24 +1853,52 @@ def jsanalysis_analyze():
     if not sources:
         return jsonify({"error": "유효한 파일이 없습니다."}), 400
 
-    try:
-        result = js_analysis.analyze(sources)
-    except Exception as e:
-        return jsonify({"error": f"분석 처리 오류: {e}"}), 500
-
     analysis_id = f"jsan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
     jsanalysis_jobs[analysis_id] = {
-        "result": result,
-        "created_at": datetime.now().isoformat(),
+        "status": "pending", "progress": 0, "stage": None,
+        "result": None, "summary": None, "error": None,
+        "stop_event": threading.Event(),
+        "created_at": datetime.now().isoformat(), "completed_at": None,
     }
+    # 이 스레드에서만 스택 크기를 키운 뒤 즉시 원복(threading.stack_size()는 "다음에
+    # 생성되는 스레드"에 적용되는 전역 설정이라, 생성 직후 원복해야 다른 코드의
+    # threading.Thread(...) 호출에 영향을 주지 않는다).
+    _prev_stack_size = threading.stack_size()
+    threading.stack_size(_JSANALYSIS_THREAD_STACK_SIZE)
+    try:
+        threading.Thread(target=_run_jsanalysis_job, args=(analysis_id, sources), daemon=True).start()
+    finally:
+        threading.stack_size(_prev_stack_size)
+    return jsonify({"analysis_id": analysis_id})
 
+
+@app.route("/api/jsanalysis/<analysis_id>/status")
+def jsanalysis_status(analysis_id):
+    """분석 job 진행 상태 조회.
+
+    응답 JSON: status(pending/running/completed/cancelled/error)·progress(0~100)·
+    stage(현재 단계 라벨)·summary(completed 시에만: files/function_count/module_edge_count/
+    module_unresolved_count/endpoint_count/candidate_endpoint_count)·error(error 시 메시지)
+    """
+    job = jsanalysis_jobs.get(analysis_id)
+    if not job:
+        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
     return jsonify({
-        "analysis_id": analysis_id,
-        "files": result["files"],
-        "function_count": len(result["functions"]),
-        "module_edge_count": len(result["modules"]["edges"]),
-        "module_unresolved_count": len(result["modules"]["unresolved"]),
+        "status": job["status"], "progress": job["progress"], "stage": job["stage"],
+        "summary": job["summary"], "error": job["error"],
     })
+
+
+@app.route("/api/jsanalysis/<analysis_id>/cancel", methods=["POST"])
+def jsanalysis_cancel(analysis_id):
+    """실행 중인 분석 job을 즉시 중단(협조적 취소, modules/_cancel.py)."""
+    job = jsanalysis_jobs.get(analysis_id)
+    if not job:
+        return jsonify({"error": "Not found"}), 404
+    if job["status"] in ("completed", "cancelled", "error"):
+        return jsonify({"error": "이미 종료된 job"}), 400
+    job["stop_event"].set()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/jsanalysis/<analysis_id>/modules")
@@ -1772,32 +1907,105 @@ def jsanalysis_modules(analysis_id):
 
     응답 JSON: edges(해소된 관계: from/to/kind/specifier), unresolved(미해소: from/specifier/kind/reason)
     """
-    job = jsanalysis_jobs.get(analysis_id)
-    if not job:
-        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
-    modules = job["result"]["modules"]
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
+    modules = result["modules"]
     return jsonify({"edges": modules["edges"], "unresolved": modules["unresolved"]})
+
+
+@app.route("/api/jsanalysis/<analysis_id>/endpoints")
+def jsanalysis_endpoints(analysis_id):
+    """HTTP 요청 sink(fetch/XHR/jQuery/axios/beacon/WebSocket/EventSource/Nexacro transaction/
+    HTML form action) 목록 조회 — 쿼리파라미터 method(완전일치)·url(부분일치)·kind(완전일치),
+    모두 대소문자 무관.
+
+    응답 JSON: results(엔드포인트 목록 — method/url/params/kind/file/line/func_id/static/variants)
+    """
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
+    method_q = request.args.get("method", "")
+    url_q = request.args.get("url", "")
+    kind_q = request.args.get("kind", "")
+    results = js_analysis.list_endpoints(result, method_query=method_q, url_query=url_q, kind_query=kind_q)
+    return jsonify({"results": results})
+
+
+@app.route("/api/jsanalysis/<analysis_id>/candidate-endpoints")
+def jsanalysis_candidate_endpoints(analysis_id):
+    """URL-형태 휴리스틱으로 탐지된 저신뢰 엔드포인트 후보 목록 조회 — 쿼리파라미터
+    url(부분일치, 대소문자 무관).
+
+    확정 sink(/endpoints)와 별도 목록이다. 이름을 알 수 없는 커스텀 HTTP 래퍼(예:
+    `obj["a"].fetch(url)`처럼 minify·computed 접근을 거치는 프로덕션 번들 관례)를 이름
+    패턴이 아닌 인자의 URL/경로 형태만으로 best-effort 탐지하므로 method는 항상
+    "?"(미상), kind는 항상 "heuristic"이며 파라미터 전파(variants)는 적용되지 않는다.
+
+    응답 JSON: results(후보 목록 — url/url_expr/callee/params/file/line/func_id/static/guards)
+    """
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
+    url_q = request.args.get("url", "")
+    results = js_analysis.list_candidate_endpoints(result, url_query=url_q)
+    return jsonify({"results": results})
 
 
 @app.route("/api/jsanalysis/<analysis_id>/search")
 def jsanalysis_search(analysis_id):
     """분석 결과 내 함수 검색 — 쿼리파라미터 name(함수명)·file(파일명) 부분/대소문자 무관 일치."""
-    job = jsanalysis_jobs.get(analysis_id)
-    if not job:
-        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
     name_q = request.args.get("name", "")
     file_q = request.args.get("file", "")
-    results = js_analysis.search_functions(job["result"], name_query=name_q, file_query=file_q)
+    results = js_analysis.search_functions(result, name_query=name_q, file_query=file_q)
     return jsonify({"results": results})
+
+
+@app.route("/api/jsanalysis/<analysis_id>/files-with-functions")
+def jsanalysis_files_with_functions(analysis_id):
+    """함수가 하나 이상 있는 파일 목록 조회 (파일 별 분기 흐름 탭의 파일 선택 목록용).
+
+    응답 JSON: files(업로드 순서 목록 — name/count)
+    """
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
+    files = js_analysis.list_files_with_functions(result)
+    return jsonify({"files": files})
+
+
+@app.route("/api/jsanalysis/<analysis_id>/filecfg-find")
+def jsanalysis_filecfg_find(analysis_id):
+    """파일 별 분기 흐름 그래프에서 함수 위치(페이지·노드 id) 검색.
+
+    쿼리파라미터 file(파일명, 필수 — 없으면 400)·name(함수명 부분/대소문자 무관 일치, 빈 값이면
+    그 파일의 전체 함수 목록). 함수가 많은 파일은 그래프가 페이지로 나뉘고 화면도 넓어 눈으로
+    찾기 어려우므로, 대시보드가 이 응답의 page로 해당 페이지를 그린 뒤 sg_id/entry_id/label로
+    그 함수를 찾아 스크롤·강조하는 데 쓴다.
+
+    응답 JSON: {results, page_size, total_functions, total_pages}
+    """
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
+    file_name = request.args.get("file") or None
+    if not file_name:
+        return jsonify({"error": "함수 위치 검색은 파일명이 필요합니다."}), 400
+    return jsonify(js_analysis.find_file_cfg_functions(
+        result, file_name, name_query=request.args.get("name", "")
+    ))
 
 
 @app.route("/api/jsanalysis/<analysis_id>/function")
 def jsanalysis_function(analysis_id):
     """함수 상세 조회 — 쿼리파라미터 id=함수id. defs/returns/out_calls/called_by 전체 반환."""
-    job = jsanalysis_jobs.get(analysis_id)
-    if not job:
-        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
-    func = js_analysis.get_function(job["result"], request.args.get("id", ""))
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
+    func = js_analysis.get_function(result, request.args.get("id", ""))
     if func is None:
         return jsonify({"error": "함수를 찾을 수 없습니다."}), 404
     return jsonify({"function": func})
@@ -1826,29 +2034,49 @@ def jsanalysis_graph(analysis_id):
     kind=dataflow : 함수 내부 데이터플로우(파라미터→지역변수→return/외부호출). id 필수.
                     expand=1이면 import/require 등으로 해소된 호출 대상 함수의 데이터플로우까지
                     같은 그래프에 인라인 전개(파일 경계를 넘는 데이터 흐름 확인용).
+    kind=cfg      : 함수 내부 제어흐름 그래프(if/switch/loop/try 분기 구조). id 필수.
+                    HTTP 요청 sink를 포함한 노드는 강조 표시된다(강제호출 가능 엔드포인트 식별용).
+    kind=filecfg  : 파일 하나에 속한 함수의 제어흐름 그래프를 함수별 묶음(subgraph)으로 이어붙인
+                    파일 단위 분기 흐름 그래프. file(파일명) 필수. 같은 파일 내 함수 호출은
+                    호출자→피호출 함수 entry 노드 점선으로 연결된다. 함수 수가 많으면 page(0-based,
+                    기본 0)개씩 나눠 반환 — 응답에 mermaid 외 page/page_size/total_functions/
+                    total_pages가 함께 포함된다(다른 kind는 {mermaid}만 반환).
     kind=module   : 업로드된 파일 간 import/require/include/script-src 의존 관계 그래프.
     """
-    job = jsanalysis_jobs.get(analysis_id)
-    if not job:
-        return jsonify({"error": "분석 결과를 찾을 수 없습니다. (만료되었거나 잘못된 id)"}), 404
+    result, err = _jsanalysis_result_or_404(analysis_id)
+    if err:
+        return err
     kind = request.args.get("kind", "call")
     func_id = request.args.get("id") or None
 
-    if kind == "dataflow":
+    if kind == "filecfg":
+        file_name = request.args.get("file") or None
+        if not file_name:
+            return jsonify({"error": "filecfg 그래프는 파일명이 필요합니다."}), 400
+        page = _clamp_int(request.args.get("page", ""), default=0, lo=0, hi=100000)
+        return jsonify(js_analysis.to_mermaid_file_cfg(result, file_name, page=page))
+    elif kind == "dataflow":
         if not func_id:
             return jsonify({"error": "dataflow 그래프는 함수 id가 필요합니다."}), 400
-        func = js_analysis.get_function(job["result"], func_id)
+        func = js_analysis.get_function(result, func_id)
         if func is None:
             return jsonify({"error": "함수를 찾을 수 없습니다."}), 404
         expand = _is_truthy(request.args.get("expand", ""))
-        mermaid = js_analysis.to_mermaid_dataflow(func, analysis=job["result"], expand=expand)
+        mermaid = js_analysis.to_mermaid_dataflow(func, analysis=result, expand=expand)
+    elif kind == "cfg":
+        if not func_id:
+            return jsonify({"error": "cfg 그래프는 함수 id가 필요합니다."}), 400
+        func = js_analysis.get_function(result, func_id)
+        if func is None:
+            return jsonify({"error": "함수를 찾을 수 없습니다."}), 404
+        mermaid = js_analysis.to_mermaid_cfg(func)
     elif kind == "module":
-        mermaid = js_analysis.to_mermaid_module_graph(job["result"])
+        mermaid = js_analysis.to_mermaid_module_graph(result)
     else:
         depth = _clamp_int(request.args.get("depth", ""), default=1, lo=1, hi=5)
         cross_file_only = _is_truthy(request.args.get("cross_file_only", ""))
         mermaid = js_analysis.to_mermaid_call_graph(
-            job["result"], center_id=func_id, depth=depth, cross_file_only=cross_file_only
+            result, center_id=func_id, depth=depth, cross_file_only=cross_file_only
         )
 
     return jsonify({"mermaid": mermaid})
@@ -1881,7 +2109,7 @@ if __name__ == "__main__":
     chosen_port = _find_free_port(args.host, args.port)
     if chosen_port is None:
         print(f"\n  [!] {args.port}~{args.port + 19} 범위에서 사용 가능한 포트를 찾지 못했습니다.")
-        print(f"  [!] --port 옵션으로 다른 포트를 지정해 주세요.\n")
+        print("  [!] --port 옵션으로 다른 포트를 지정해 주세요.\n")
         sys.exit(1)
     if chosen_port != args.port:
         print(f"\n  [!] 포트 {args.port}(이)가 사용 중이라 {chosen_port} 포트로 대체합니다.")

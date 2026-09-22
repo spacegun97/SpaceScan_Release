@@ -9,9 +9,9 @@
 
 ### Phase 1 — BFS 크롤링 (엔드포인트 수집)
 
-1. BFS 시작 전 `robots.txt`와 `sitemap.xml`에서 같은 도메인 URL을 추가 시드로 수집한다. `robots.txt`의 Disallow/Allow 지시자는 발견 힌트로만 사용하며 차단 규칙을 따르지 않는다. `sitemap.xml`은 `<sitemapindex>`가 감지되면 하위 sitemap URL을 재귀 조회한다(깊이 3, 자식 20개 상한).
+1. BFS 시작 전 `robots.txt`와 `sitemap.xml`에서 같은 도메인 URL을 추가 시드로 수집한다. `robots.txt`의 Disallow/Allow 지시자는 발견 힌트로만 사용하며 차단 규칙을 따르지 않는다. `sitemap.xml`은 `<sitemapindex>`가 감지되면 하위 sitemap URL을 재귀 조회한다(깊이 3, 자식 20개 상한). 이 시드 수집 요청들(재귀 자식 sitemap 포함)도 BFS 본 루프와 동일하게 요청 간 `delay`를 적용받는다.
 2. 입력 URL + 시드를 큐에 넣고 BFS 방식으로 같은 도메인 내 URL을 방문한다.
-3. 응답 분류는 HTTP 상태 코드와 무관하므로 403·404 등 비200 응답도 CT·본문 스니핑 결과에 따라 파싱된다. HTML 응답에서는 `href`/`src`/`action`(따옴표·미따옴표, 등호 앞뒤 공백 허용), `data-url`/`data-href`/`data-action`/`data-src`, `srcset`, `<meta http-equiv="refresh">` url= 값, GET `<form>`(action + 필드명 조합 쿼리 URL, POST 폼 제외)을 추출하고, 스크립트 응답에서는 `fetch`/`axios` 등 JS 호출 URL(백틱 템플릿 리터럴 포함)을 추출해 큐에 추가한다.
+3. 응답 분류는 HTTP 상태 코드와 무관하므로 403·404 등 비200 응답도 CT·본문 스니핑 결과에 따라 파싱된다. HTML 응답에서는 `href`/`src`/`action`(따옴표·미따옴표, 등호 앞뒤 공백 허용), `data-url`/`data-href`/`data-action`/`data-src`, `srcset`, `<meta http-equiv="refresh">` url= 값, GET `<form>`(action + 필드명 조합 쿼리 URL, POST 폼 제외)을 추출하고, 스크립트 응답에서는 `fetch`/`axios` 등 JS 호출 URL(백틱 템플릿 리터럴 포함)을 추출해 큐에 추가한다. 위 정규식이 놓치는 동적 조립 URL은 esprima/tree-sitter AST(`js_analysis.extract_endpoints()` 재사용, `modules/_endpoint_extract.py` 게이트 경유)로 추가 보강해 병합(union)한다 — 상세는 `sql_injection.md`의 "AST 기반 JS 엔드포인트 보강" 참고(크롤 큐 확장이라는 점만 다르고 게이트 규칙은 동일).
 4. `allow_redirects=True`로 요청하고, 리다이렉트 후 최종 URL이 동일 사이트(`www.` 유무·대소문자 차이는 동일 취급)를 벗어나면 해당 페이지를 결과에서 제외한다.
 5. 인증 세션 파기 방지를 위해 로그아웃 성격 경로(`logout`/`log-out`/`signout`/`sign-out`)는 큐 추가 단계에서 자동 제외한다.
 6. 동일 서명(path + 쿼리 파라미터명 집합)의 URL은 최대 3회까지만 방문하여 값만 변하는 URL의 반복 트랩을 방지한다. 단, 파라미터명이 페이지네이션 성격(`page`/`p`/`offset` 등)이면 상한을 적용하지 않아 `max_pages` 한도 내에서 계속 발견된다. 요청 실패 시 `Timeout`·`ChunkedEncodingError`에 한해 최대 2회 재시도한다.
@@ -75,7 +75,8 @@
 | `proxies` | dict \| None | None | `{"http": ..., "https": ...}` 형식의 프록시 설정 |
 | `progress_cb` | callable \| None | None | 하위 진행률 보고 콜백 `(current, total)`. 크롤링 0~50%, 디렉토리 점검 50~100% 범위로 보고 |
 | `auth_headers` | dict \| None | None | 모든 HTTP 요청 헤더에 영구 부착 (Authorization 등) |
-| `render` | bool | False | JS 렌더링 활성화. SPA 동적 경로를 포함하여 더 많은 디렉토리 후보를 수집한다 |
+| `render` | bool | False | JS 렌더링 활성화. SPA 동적 경로를 포함하여 더 많은 디렉토리 후보를 수집한다. 같은 도메인 서브리소스에도 `delay`가 적용된다 |
 | `stop_event` | Event \| None | None | [중단] 신호. set 시 크롤·디렉토리 점검의 요청 직전·딜레이 대기에서 `wait_or_cancel()`이 `ScanCancelled`를 던져 즉시 중단. `_run_scan()`이 주입 |
+| `crawl_cache` | dict \| None | None | `{"pages": [...]}`. 값이 있으면 BFS 크롤을 재실행하지 않고 재사용(동일 스캔 잡 내 `sql_injection`·`path_traversal`과 크롤 결과 공유, 중복 요청 방지). `_run_scan()`이 주입, 직접 호출 시 생략하면 항상 크롤 수행 |
 
 **GUI:** 스캔 설정 폼의 "최대 크롤링 페이지" 입력 필드

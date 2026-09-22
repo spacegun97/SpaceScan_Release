@@ -33,6 +33,29 @@
     {"path": "/jaxrs-1.0/",                    "severity": "LOW",    "category": "sample_app"},
     {"path": "/simpleapp/",                    "severity": "LOW",    "category": "sample_app"},
     {"path": "/index.html",                    "severity": "LOW",    "category": "default_resource"},
-    {"path": "/favicon.ico",                   "severity": "LOW",    "category": "default_resource"}
+    {"path": "/favicon.ico",                   "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/ibm/console/logon.jsp",         "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/admin/j_security_check",        "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/wsadmin/",                      "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/ibm/mq/console/",               "severity": "MEDIUM", "category": "admin_console"},
+
+    {"path": "/UDDIRegistry/",                 "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/wsdl/",                         "severity": "LOW",    "category": "api_endpoint"},
+    {"path": "/webservices/",                  "severity": "LOW",    "category": "api_endpoint"},
+
+    {"path": "/logs/SystemOut.log",            "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/logs/SystemErr.log",            "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/logs/ffdc/",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/properties/soap.client.props",  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/config/cells/",                 "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/samples/",                      "severity": "LOW",    "category": "sample_app"},
+    {"path": "/j2c/",                          "severity": "LOW",    "category": "default_resource"},
+    {"path": "/webapp/examples/",              "severity": "LOW",    "category": "sample_app"},
+    {"path": "/webapp/harness/",               "severity": "LOW",    "category": "debug_endpoint"},
+
+    {"path": "/traceSpec.jsp",                 "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/loginout.jsp",                  "severity": "LOW",    "category": "default_resource"}
   ]
 }

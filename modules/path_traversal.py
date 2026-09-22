@@ -86,6 +86,21 @@ PATTERN_LABELS: Dict[str, str] = {
     "filename":       "파일명 직접 참조",
 }
 
+# 카테고리 → 심각도. 구체적인 트래버설/프로토콜 래퍼/시스템 경로 패턴(고신뢰)은 HIGH,
+# 슬래시·IP·확장자 등 값 형태만으로 매칭되는 광범위 패턴(저신뢰, 오탐 감수)은 MEDIUM으로
+# 낮춰 리포트에서 HIGH가 저신뢰 매칭으로 도배되지 않도록 한다.
+PATTERN_SEVERITY: Dict[str, str] = {
+    "traversal":      "HIGH",
+    "wrapper_scheme": "HIGH",
+    "windows_abs":    "HIGH",
+    "unc_path":       "HIGH",
+    "unix_system":    "HIGH",
+    "ssrf_url":       "MEDIUM",
+    "ip_addr":        "MEDIUM",
+    "path_value":     "MEDIUM",
+    "filename":       "MEDIUM",
+}
+
 # URL path 검사 대상 카테고리 (파라미터와 달리 traversal·wrapper만 — 오탐 최소화)
 _PATH_CATS: Set[str] = {"traversal", "wrapper_scheme"}
 
@@ -97,7 +112,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
          progress_cb: Optional[Callable[[int, int], None]] = None,
          proxies: Optional[Dict[str, str]] = None,
          auth_headers: Optional[Dict[str, str]] = None,
-         render: bool = False, stop_event=None) -> Dict[str, Any]:
+         render: bool = False, stop_event=None,
+         crawl_cache: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     result: Dict[str, Any] = {
         "module":       "Path Traversal",
         "target":       target_url,
@@ -112,19 +128,32 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     base_netloc = urlparse(target_url).netloc
 
     # Phase 1: BFS 크롤링 (진행률 0~90%)
-    crawl_cb = None
-    if progress_cb:
-        def crawl_cb(cur, total):
-            progress_cb(int(cur / total * 90) if total else 0, 100)
-    pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages,
-                         cookies, progress_cb=crawl_cb, proxies=proxies,
-                         auth_headers=auth_headers, render=render,
-                         stop_event=stop_event)
-    debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
-                         "path_traversal", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
+    # crawl_cache에 이미 결과가 있으면(같은 스캔 잡의 다른 모듈이 동일 target·설정으로
+    # 먼저 크롤을 마쳤으면) 재사용해 중복 크롤(타깃 서버 중복 요청)을 피한다.
+    cache_hit = crawl_cache is not None and "pages" in crawl_cache
+    if cache_hit:
+        pages = crawl_cache["pages"]
+        debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
+                             "path_traversal",
+                             f"BFS 크롤링 재사용: {len(pages)}개 페이지 (중복 요청 생략)"))
+        if progress_cb:
+            progress_cb(90, 100)
+    else:
+        crawl_cb = None
+        if progress_cb:
+            def crawl_cb(cur, total):
+                progress_cb(int(cur / total * 90) if total else 0, 100)
+        pages = _crawl.crawl(base, base_netloc, timeout, delay, max_pages,
+                             cookies, progress_cb=crawl_cb, proxies=proxies,
+                             auth_headers=auth_headers, render=render,
+                             stop_event=stop_event, debug_sink=debug_events)
+        debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
+                             "path_traversal", f"BFS 크롤링 완료: {len(pages)}개 페이지"))
+        if crawl_cache is not None:
+            crawl_cache["pages"] = pages
 
-    if progress_cb:
-        progress_cb(90, 100)
+        if progress_cb:
+            progress_cb(90, 100)
 
     # Phase 2: 경로 패턴 매칭 (진행률 90~100%, 로컬 연산)
     # (url, method, param) 기준 중복 방지 — 동일 포인트에 여러 패턴 매칭 시 하나의 finding만 생성
@@ -143,7 +172,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
         # (A) 파라미터 값 검사 — body가 있으면 kind에 따라 파싱 (html/script/json 모두)
         if page.get("body"):
             for point in parse_input_points(
-                page["url"], page["body"], base_netloc, kind=page.get("kind", "html")
+                page["url"], page["body"], base_netloc, kind=page.get("kind", "html"),
+                debug_sink=debug_events
             ):
                 for param, value in point["params"].items():
                     _check_and_add(point["url"], point["method"], param, value,
@@ -160,7 +190,8 @@ def scan(target_url: str, timeout: int = 10, delay: float = 0.7,
     debug_events.append((datetime.now().isoformat(timespec='milliseconds'),
                          "path_traversal", f"스캔 완료: {len(findings)}개 취약점"))
     result["findings"]     = findings
-    result["crawl_events"] = [(p["visited_at"], p["url"]) for p in pages]
+    # 캐시 재사용 시에는 이미 기록된 크롤 로그이므로 중복 출력하지 않는다
+    result["crawl_events"] = [] if cache_hit else [(p["visited_at"], p["url"]) for p in pages]
     return result
 
 
@@ -237,7 +268,7 @@ def _make_finding(url: str, method: str, param: str, category: str, hint: str,
         )
 
     return {
-        "severity":    "HIGH",
+        "severity":    PATTERN_SEVERITY.get(category, "HIGH"),
         "url":         url,
         "method":      method,
         "param":       param if param != "__path__" else None,

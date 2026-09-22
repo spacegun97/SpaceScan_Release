@@ -43,6 +43,58 @@
     {"path": "/default.aspx",                          "severity": "LOW",    "category": "default_resource"},
     {"path": "/ScriptResource.axd",                    "severity": "LOW",    "category": "default_resource"},
     {"path": "/WebResource.axd",                       "severity": "LOW",    "category": "default_resource"},
-    {"path": "/app_offline.htm",                       "severity": "LOW",    "category": "default_resource"}
+    {"path": "/app_offline.htm",                       "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/DesktopModules/",                       "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/ReportServer",                          "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/Reports",                               "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/owa/",                                  "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/ecp/",                                  "severity": "MEDIUM", "category": "admin_console"},
+
+    {"path": "/_vti_bin/_vti_aut/fp30reg.dll",         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/_vti_inf.html",                         "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/_vti_log/",                             "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/_vti_cnf/",                             "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/_vti_txt/",                             "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/_vti_script/",                          "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/webresource.axd",                       "severity": "LOW",    "category": "default_resource"},
+    {"path": "/webqa.axd",                             "severity": "LOW",    "category": "debug_endpoint"},
+    {"path": "/DotNetNuke/",                           "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/DNNSite/",                              "severity": "LOW",    "category": "default_resource"},
+    {"path": "/Install/",                              "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/Providers/",                            "severity": "LOW",    "category": "sensitive_file"},
+
+    {"path": "/exchange/",                             "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/exchweb/",                              "severity": "MEDIUM", "category": "default_resource"},
+    {"path": "/rpc/",                                  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/EWS/",                                  "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/EWS/Exchange.asmx",                     "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/autodiscover/autodiscover.xml",         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/Microsoft-Server-ActiveSync",           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/Autodiscover/",                         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/ecp/Current/exporttool/",               "severity": "MEDIUM", "category": "admin_console"},
+
+    {"path": "/remote/login",                          "severity": "MEDIUM", "category": "admin_console"},
+    {"path": "/vpn/index.html",                        "severity": "MEDIUM", "category": "admin_console"},
+
+    {"path": "/App_Browsers/",                         "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/bin/",                                  "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/App_Data/",                             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/wwwroot/web.config",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/inetpub/wwwroot/web.config",            "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/web.config.txt",                        "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/Web.config.bak",                        "severity": "MEDIUM", "category": "sensitive_file"},
+
+    {"path": "/iisstart.htm.bak",                      "severity": "LOW",    "category": "sensitive_file"},
+    {"path": "/postinfo.html",                         "severity": "LOW",    "category": "default_resource"},
+    {"path": "/pagerror.gif",                          "severity": "LOW",    "category": "default_resource"},
+    {"path": "/printenv.asp",                          "severity": "MEDIUM", "category": "config_exposure"},
+    {"path": "/webnews.asp",                           "severity": "LOW",    "category": "sample_app"},
+    {"path": "/samples/",                              "severity": "LOW",    "category": "sample_app"},
+    {"path": "/iishelp/",                              "severity": "LOW",    "category": "default_resource"},
+    {"path": "/msadc/",                                "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/_private/",                             "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/_derived/",                             "severity": "LOW",    "category": "sensitive_file"}
   ]
 }

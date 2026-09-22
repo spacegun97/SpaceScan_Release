@@ -19,17 +19,13 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
+from ._excel_safe import safe_cell
+
 # 예약 출처 컬럼명 — 항상 첫 번째 컬럼으로 고정
 ORIGIN_COL = "출처파일"
 
 # 지원 확장자 집합
 SUPPORTED_EXTS = frozenset({".xlsx", ".xlsm", ".xls", ".csv"})
-
-# 엑셀 수식 인젝션 방어 접두사 목록
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-
-# openpyxl 저장 불가 제어 문자 (openpyxl ILLEGAL_CHARACTERS_RE 와 동일)
-_ILLEGAL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # 파일명 금지 문자 패턴 (Windows)
 _INVALID_FILE_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -43,17 +39,12 @@ _RESERVED_FILENAMES = frozenset({
 # ── 유틸 ──────────────────────────────────────────────────────────────────────
 
 def _safe_cell(v: Any) -> Any:
-    """엑셀 저장 불가 제어문자 제거 + 수식 인젝션 방어. 비문자열은 그대로 반환."""
-    if v is None:
-        return ""
-    if isinstance(v, str):
-        # 엑셀 저장 불가 제어문자 제거 (openpyxl IllegalCharacterError 방어)
-        if _ILLEGAL_CHARS_RE.search(v):
-            v = _ILLEGAL_CHARS_RE.sub("", v)
-        # 수식 인젝션 방어 — 위험 prefix 문자열에 ' 추가
-        if v.startswith(_FORMULA_PREFIXES):
-            return "'" + v
-    return v
+    """엑셀 저장 불가 제어문자 제거 + 수식 인젝션 방어. 비문자열은 그대로 반환.
+
+    실제 구현은 _excel_safe.safe_cell() 공용 함수로 위임한다
+    (recon._safe_cell / sqli_extract._safe_cell_value와 로직 통일).
+    """
+    return safe_cell(v)
 
 
 def _ext(filename: str) -> str:

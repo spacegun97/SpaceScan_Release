@@ -40,6 +40,23 @@
     {"path": "/ne/binary/",                                    "severity": "LOW",    "category": "default_resource"},
     {"path": "/namo/binary/",                                  "severity": "LOW",    "category": "default_resource"},
     {"path": "/crosseditor2/",                                 "severity": "LOW",    "category": "default_resource"},
-    {"path": "/CrossEditor5/",                                 "severity": "LOW",    "category": "default_resource"}
+    {"path": "/CrossEditor5/",                                 "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/editor/crosseditor/",                           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/board/crosseditor/",                            "severity": "LOW",    "category": "default_resource"},
+    {"path": "/common/crosseditor/",                           "severity": "LOW",    "category": "default_resource"},
+    {"path": "/resources/crosseditor/",                        "severity": "LOW",    "category": "default_resource"},
+    {"path": "/js/crosseditor/",                                "severity": "LOW",    "category": "default_resource"},
+
+    {"path": "/crosseditor/binary/DeleteHandler.aspx",         "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/DeleteHandler.jsp",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/DeleteHandler.php",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/ImageHandler.ashx",          "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/ImageHandler.jsp",           "severity": "MEDIUM", "category": "api_endpoint"},
+    {"path": "/crosseditor/binary/ImageHandler.php",           "severity": "MEDIUM", "category": "api_endpoint"},
+
+    {"path": "/crosseditor/config/CrossEditorConfig.xml",      "severity": "LOW",    "category": "config_exposure"},
+    {"path": "/crosseditor/inc/config.php",                    "severity": "MEDIUM", "category": "sensitive_file"},
+    {"path": "/ne/config/",                                    "severity": "LOW",    "category": "config_exposure"}
   ]
 }

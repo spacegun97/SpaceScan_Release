@@ -35,6 +35,7 @@ from urllib.parse import urlparse, urljoin
 import requests
 
 from modules._cancel import wait_or_cancel
+from modules._excel_safe import safe_cell
 
 # ── 상수 ────────────────────────────────────────────────────────────────────
 
@@ -78,8 +79,11 @@ MAX_RAW_URLS_PER_SOURCE = 5000
 MAX_URLS_PER_HOST = 200
 MAX_TOTAL_URLS = 3000
 
-# 엑셀 수식 인젝션 방어 접두사
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+# URL 수집 시 제외 대상 정적 리소스 확장자 (기본 제외 — exclude_static 토글)
+STATIC_ASSET_EXTENSIONS = frozenset({
+    "gif", "jpg", "jpeg", "png", "webp", "svg", "ico",
+    "css", "woff", "woff2", "mp4",
+})
 
 # 도메인 형식 검증 — 호스트명만 허용 (스킴·경로·공백·단일 라벨 불가)
 _DOMAIN_RE = re.compile(
@@ -114,6 +118,21 @@ def _is_in_scope(host: str, domain: str) -> bool:
     host = host.lower().rstrip(".")
     domain = domain.lower().rstrip(".")
     return host == domain or host.endswith("." + domain)
+
+
+def _is_static_asset(url: str) -> bool:
+    """URL 경로의 파일명 확장자가 STATIC_ASSET_EXTENSIONS에 속하는지 확인한다.
+
+    쿼리스트링/프래그먼트는 urlparse()가 path와 분리해 주므로
+    "/logo.png?v=2" 같은 URL도 정상적으로 정적 리소스로 판별된다.
+    확장자 판정은 경로의 마지막 세그먼트(파일명)만 검사한다 — "/v1.2/api/data"처럼
+    디렉터리 세그먼트에 점이 있어도 오탐하지 않는다.
+    """
+    filename = urlparse(url).path.rsplit("/", 1)[-1]
+    if "." not in filename:
+        return False
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return ext in STATIC_ASSET_EXTENSIONS
 
 
 def _ip_sort_key(ip: str):
@@ -544,12 +563,16 @@ def query_internetdb(ip: str, timeout: int, session: requests.Session) -> Option
 def run_recon(domain: str, sources: List[str], *,
              timeout: int = 8,
              max_subdomains: int = DEFAULT_MAX_SUBDOMAINS,
+             exclude_static: bool = True,
              progress_cb: Optional[Callable[[int, int], None]] = None,
              stop_event=None) -> Dict[str, Any]:
     """패시브 정보수집 오케스트레이션.
 
     sources: SOURCE_KEYS 부분집합. "internetdb"가 있으면 IP 확보를 위해 "dns"를
     방어적으로 자동 포함한다(서버가 이미 보장하지만 직접 호출 대비 재확인).
+    exclude_static이 True(기본값)면 STATIC_ASSET_EXTENSIONS 확장자의 URL을
+    서브도메인별 URL 상한(MAX_URLS_PER_HOST/MAX_TOTAL_URLS) 적용 "전"에 제외한다
+    — 정적 리소스가 상한 자리를 차지해 실제 엔드포인트가 밀려나는 것을 방지한다.
     progress_cb는 (current, total=100) 형식의 백분율 콜백 — 단계 경계마다 호출된다.
     stop_event가 set되면 각 단계 반복 지점에서 ScanCancelled를 던져 즉시 중단한다.
     """
@@ -687,13 +710,19 @@ def run_recon(domain: str, sources: List[str], *,
         for h in sorted(all_subdomains)
     ]
 
-    # ── URL을 서브도메인별로 그룹핑 (스코프 필터 + 상한 적용) ────────────────
+    # ── URL을 서브도메인별로 그룹핑 (스코프 필터 + 정적 리소스 제외 + 상한 적용) ──
+    # 정적 리소스 제외는 상한 카운트(url_total) 이전에 수행한다 — 그래야 이미지 등이
+    # MAX_URLS_PER_HOST/MAX_TOTAL_URLS 자리를 차지해 실제 엔드포인트가 밀려나지 않는다.
     subdomain_urls: Dict[str, List[Dict[str, Any]]] = {}
     url_total = 0
     url_truncated = False
+    url_excluded_static = 0
     for url in sorted(url_sources.keys()):
         host = urlparse(url).netloc.split(":")[0].lower()
         if not host or not _is_in_scope(host, domain):
+            continue
+        if exclude_static and _is_static_asset(url):
+            url_excluded_static += 1
             continue
         if url_total >= MAX_TOTAL_URLS:
             url_truncated = True
@@ -724,6 +753,8 @@ def run_recon(domain: str, sources: List[str], *,
             "resolved_ip_count": len(resolved_ips),
             "url_total": url_total,
             "url_truncated": url_truncated,
+            "exclude_static": exclude_static,
+            "url_excluded_static": url_excluded_static,
         },
     }
 
@@ -902,6 +933,12 @@ def generate_recon_html(result: Dict[str, Any], output_dir: str) -> str:
             f'<span style="color:#fb923c"> (호스트당 {MAX_URLS_PER_HOST}개 / 전체 {MAX_TOTAL_URLS}개 상한으로 제한됨)</span>'
         )
 
+    static_filter_note = ""
+    if meta.get("exclude_static"):
+        static_filter_note = (
+            f'<span style="color:#4a607a"> (정적 리소스 확장자 제외됨 — {meta.get("url_excluded_static", 0)}개 제외)</span>'
+        )
+
     html = f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Space Scan Recon – {_esc(domain)}</title>
@@ -934,7 +971,7 @@ def generate_recon_html(result: Dict[str, Any], output_dir: str) -> str:
 <div class="sec-hd">인증서 (CT 로그 — crt.sh, 실패 시 certspotter 폴백)</div>
 {_recon_html_certs(result["certificates"])}
 
-<div class="sec-hd">수집 URL — 서브도메인별 (Wayback/Common Crawl/urlscan.io/아카이브 robots·sitemap){url_truncated_note}</div>
+<div class="sec-hd">수집 URL — 서브도메인별 (Wayback/Common Crawl/urlscan.io/아카이브 robots·sitemap){url_truncated_note}{static_filter_note}</div>
 {_recon_html_urls(result["subdomain_urls"])}
 
 <div class="sec-hd">열린 포트 (Shodan InternetDB — 무키, 사전 수집 데이터)</div>
@@ -953,12 +990,9 @@ def generate_recon_html(result: Dict[str, Any], output_dir: str) -> str:
 # ── 결과 저장: Excel ─────────────────────────────────────────────────────────
 
 def _safe_cell(v: Any) -> Any:
-    """엑셀 수식 인젝션 방어 — 위험 prefix 문자열에 ' 추가."""
-    if v is None:
-        return ""
-    if isinstance(v, str) and v.startswith(_FORMULA_PREFIXES):
-        return "'" + v
-    return v
+    """엑셀 수식 인젝션 방어 + 제어문자 제거. 실제 구현은 _excel_safe.safe_cell() 공용
+    함수로 위임한다(excel_merge._safe_cell / sqli_extract._safe_cell_value와 로직 통일)."""
+    return safe_cell(v)
 
 
 def _cve_lines_text(vulns: List[str]) -> str:
@@ -1008,6 +1042,8 @@ def save_recon_to_excel(result: Dict[str, Any], output_dir: str) -> str:
         ("Resolved IP Count", meta["resolved_ip_count"]),
         ("URL Total", meta["url_total"]),
         ("URL Truncated", meta["url_truncated"]),
+        ("Exclude Static Assets", meta.get("exclude_static", True)),
+        ("Excluded Static URL Count", meta.get("url_excluded_static", 0)),
         ("Errors", "; ".join(f'{e["source"]}: {e["message"]}' for e in result.get("errors", []))),
     ]
     for k, v in info_rows:
